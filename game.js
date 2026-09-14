@@ -587,5 +587,90 @@ function drawButtonsUI() {
   drawRoundBtn(btnPass,   'CHUYEN', '#1e88e5', '#0d47a1', 11);
   drawRoundBtn(btnSprint, 'CHAY',   '#43a047', '#1b5e20', 11);
 }
+function drawScoreboard() {
+  ctx.fillStyle = 'rgba(10,10,20,0.92)';
+  ctx.fillRect(0, 0, W, SCOREBOARD_H);
+  ctx.fillStyle = 'rgba(255,255,255,0.15)';
+  ctx.fillRect(0, SCOREBOARD_H - 1, W, 1);
 
-f1
+  const cy = SCOREBOARD_H / 2;
+  const lr = 19;
+  const hx = 60;
+  ctx.beginPath(); ctx.arc(hx, cy, lr, 0, Math.PI*2);
+  ctx.fillStyle = '#0d47a1'; ctx.fill();
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 14px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('FC', hx, cy + 1);
+
+  const aw = W - 60;
+  ctx.beginPath(); ctx.arc(aw, cy, lr, 0, Math.PI*2);
+  ctx.fillStyle = '#b71c1c'; ctx.fill();
+  ctx.fillStyle = '#fff';
+  ctx.fillText('AI', aw, cy + 1);
+
+  ctx.fillStyle = '#4caf50'; ctx.font = 'bold 22px sans-serif';
+  ctx.fillText(String(homeScore), W/2 - 20, cy - 6);
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 15px sans-serif';
+  ctx.fillText('-', W/2, cy - 6);
+  ctx.fillStyle = '#f44336'; ctx.font = 'bold 22px sans-serif';
+  ctx.fillText(String(awayScore), W/2 + 20, cy - 6);
+
+  const tc = gameState.timeLeft < 10 ? '#ff5252' : '#ffd54f';
+  ctx.fillStyle = tc; ctx.font = 'bold 12px sans-serif';
+  ctx.fillText(formatTime(gameState.timeLeft), W/2, cy + 16);
+}
+
+function drawGoalOverlay() {
+  ctx.fillStyle = 'rgba(0,0,0,0.78)';
+  ctx.fillRect(0, H/2 - 100, W, 200);
+  ctx.fillStyle = '#ffd700';
+  ctx.font = 'bold 52px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('GOAL!', W/2, H/2 - 35);
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 20px sans-serif';
+  ctx.fillText(goalMsg.text, W/2, H/2 + 30);
+}
+
+function drawFullTime() {
+  ctx.fillStyle = 'rgba(0,0,0,0.85)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#ffd54f'; ctx.font = 'bold 42px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('FULL TIME', W/2, H * 0.22);
+  ctx.font = 'bold 66px sans-serif';
+  ctx.fillStyle = '#4caf50';
+  ctx.fillText(String(homeScore), W/2 - 65, H * 0.42);
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 40px sans-serif';
+  ctx.fillText('-', W/2, H * 0.42);
+  ctx.fillStyle = '#f44336'; ctx.font = 'bold 66px sans-serif';
+  ctx.fillText(String(awayScore), W/2 + 65, H * 0.42);
+
+  let rt, rc;
+  if (homeScore > awayScore)      { rt = 'CHIEN THANG!'; rc = '#4caf50'; }
+  else if (homeScore < awayScore) { rt = 'THAT BAI';     rc = '#f44336'; }
+  else                            { rt = 'HOA';          rc = '#ffd54f'; }
+  ctx.fillStyle = rc; ctx.font = 'bold 28px sans-serif';
+  ctx.fillText(rt, W/2, H * 0.55);
+
+  const rb = getRestartBtn();
+  const g = ctx.createLinearGradient(rb.x, rb.y, rb.x, rb.y + rb.h);
+  g.addColorStop(0, '#43a047'); g.addColorStop(1, '#1b5e20');
+  roundRect(rb.x, rb.y, rb.w, rb.h, 14); ctx.fillStyle = g; ctx.fill();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+  roundRect(rb.x, rb.y, rb.w, rb.h, 14); ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 22px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('CHOI LAI', rb.x + rb.w/2, rb.y + rb.h/2);
+}
+
+let lastTime = performance.now();
+function loop(now) {
+  const dt = Math.min(0.05, (now - lastTime) / 1000);
+  lastTime = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+init();
+requestAnimationFrame(loop);
