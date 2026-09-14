@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Mini FC Mobile</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { width:100%; height:100%; overflow:hidden; background:#000;
+    touch-action:none; user-select:none; font-family:sans-serif; }
+  #game { display:block; width:100%; height:100%; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+// Điện thoại có màn hình mật độ cao → scale cho nét
+function resize() {
+  const dpr = window.devicePixelRatio || 1;
+  canvas.width = innerWidth * dpr;
+  canvas.height = innerHeight * dpr;
+  canvas.style.width = innerWidth + 'px';
+  canvas.style.height = innerHeight + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  W = innerWidth;
+  H = innerHeight;
+}
+let W, H;
+addEventListener('resize', resize);
+
+// ===== GAME STATE =====
+const player = { x:0, y:0, r:22, speed:5, color:'#2196f3' };
+const enemy  = { x:0, y:0, r:22, speed:2.2, color:'#f44336' };
+const ball   = { x:0, y:0, r:10, vx:0, vy:0 };
+
+// ===== ĐIỀU KHIỂN =====
+// Joystick trái (di chuyển)
+const joy = { active:false, id:null, baseX:0, baseY:0, x:0, y:0, R:70 };
+// Nút phải (sút)
+const btnShoot = { x:0, y:0, r:45, pressed:false, id:null, label:'SÚT' };
+
+// ===== TOUCH HANDLING =====
+function onTouchStart(e) {
+  for (const t of e.changedTouches) {
+    const x = t.clientX, y = t.clientY;
+    // Chạm nửa phải màn hình = nút sút
+    if (x > W/2) {
+      btnShoot.pressed = true;
+      btnShoot.id = t.identifier;
+      shoot();
+    } else {
+      // Nửa trái = joystick (xuất hiện tại chỗ chạm)
+      joy.active = true;
+      joy.id = t.identifier;
+      joy.baseX = x;
+      joy.baseY = y;
+      joy.x = x;
+      joy.y = y;
+    }
+  }
+  e.preventDefault();
+}
+function onTouchMove(e) {
+  for (const t of e.changedTouches) {
+    if (t.identifier === joy.id) {
+      let dx = t.clientX - joy.baseX;
+      let dy = t.clientY - joy.baseY;
+      const d = Math.hypot(dx, dy);
+      if (d > joy.R) { dx = dx/d*joy.R; dy = dy/d*joy.R; }
+      joy.x = joy.baseX + dx;
+      joy.y = joy.baseY + dy;
+    }
+  }
+  e.preventDefault();
+}
+function onTouchEnd(e) {
+  for (const t of e.changedTouches) {
+    if (t.identifier === joy.id) { joy.active = false; joy.id = null; }
+    if (t.identifier === btnShoot.id) { btnShoot.pressed = false; btnShoot.id = null; }
+  }
+  e.preventDefault();
+}
+canvas.addEventListener('touchstart', onTouchStart, {passive:false});
+canvas.addEventListener('touchmove', onTouchMove, {passive:false});
+canvas.addEventListener('touchend', onTouchEnd, {passive:false});
+canvas.addEventListener('touchcancel', onTouchEnd, {passive:false});
+
+// Sút bóng nếu đang giữ bóng
+function shoot() {
+  const d = Math.hypot(ball.x - player.x, ball.y - player.y);
+  if (d < player.r + ball.r + 20) {
+    // Sút về phía khung thành đối phương (trên)
+    const tx = W/2, ty = 0;
+    const ang = Math.atan2(ty - ball.y, tx - ball.x);
+    ball.vx = Math.cos(ang) * 16;
+    ball.vy = Math.sin(ang) * 16;
+  }
+}
+
+// ===== LOGIC =====
+function init() {
+  resize();
+  player.x = W/2; player.y = H - 100;
+  enemy.x = W/2;  enemy.y = 120;
+  ball.x = W/2;   ball.y = H/2;
+}
+
+function update() {
+  // Di chuyển theo joystick
+  if (joy.active) {
+    const dx = joy.x - joy.baseX;
+    const dy = joy.y - joy.baseY;
+    const d = Math.hypot(dx, dy);
+    if (d > 8) {
+      player.x += (dx/d) * player.speed;
+      player.y += (dy/d) * player.speed;
+    }
+  }
+  // Giới hạn sân
+  player.x = Math.max(player.r, Math.min(W - player.r, player.x));
+  player.y = Math.max(player.r + 40, Math.min(H - player.r - 40, player.y));
+
+  // AI đuổi bóng
+  const ax = ball.x - enemy.x, ay = ball.y - enemy.y;
+  const ad = Math.hypot(ax, ay);
+  if (ad > 1) {
+    enemy.x += (ax/ad) * enemy.speed;
+    enemy.y += (ay/ad) * enemy.speed;
+  }
+
+  // Va chạm player/ball
+  [player, enemy].forEach(p => {
+    const d = Math.hypot(ball.x - p.x, ball.y - p.y);
+    if (d < p.r + ball.r && d > 0.01) {
+      const ang = Math.atan2(ball.y - p.y, ball.x - p.x);
+      const power = p === player ? 6 : 5;
+      ball.vx = Math.cos(ang) * power;
+      ball.vy = Math.sin(ang) * power;
+    }
+  });
+
+  // Bóng di chuyển + ma sát
+  ball.x += ball.vx;
+  ball.y += ball.vy;
+  ball.vx *= 0.96;
+  ball.vy *= 0.96;
+  if (Math.abs(ball.vx) < 0.05) ball.vx = 0;
+  if (Math.abs(ball.vy) < 0.05) ball.vy = 0;
+
+  // Nảy biên
+  if (ball.x < ball.r) { ball.x = ball.r; ball.vx *= -0.8; }
+  if (ball.x > W - ball.r) { ball.x = W - ball.r; ball.vx *= -0.8; }
+  if (ball.y < ball.r + 20) { ball.y = ball.r + 20; ball.vy *= -0.8; }
+  if (ball.y > H - ball.r - 20) { ball.y = H - ball.r - 20; ball.vy *= -0.8; }
+}
+
+// ===== VẼ =====
+function draw() {
+  // Sân cỏ
+  ctx.fillStyle = '#2e7d32';
+  ctx.fillRect(0, 0, W, H);
+
+  // Vạch kẻ
+  ctx.strokeStyle = 'rgba(255,255,255,0.7)';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(0, H/2); ctx.lineTo(W, H/2); ctx.stroke();
+  ctx.beginPath(); ctx.arc(W/2, H/2, 60, 0, Math.PI*2); ctx.stroke();
+
+  // Khung thành trên + dưới
+  ctx.fillStyle = 'rgba(255,255,255,0.9)';
+  ctx.fillRect(W/2 - W*0.12, 20, W*0.24, 8);
+  ctx.fillRect(W/2 - W*0.12, H - 28, W*0.24, 8);
+
+  // Cầu thủ
+  [player, enemy].forEach(p => {
+    ctx.fillStyle = p.color;
+    ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI*2); ctx.fill();
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+  });
+
+  // Bóng
+  ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle = '#000'; ctx.lineWidth = 2; ctx.stroke();
+
+  // === UI ĐIỀU KHIỂN ===
+  // Joystick
+  if (joy.active) {
+    ctx.beginPath();
+    ctx.arc(joy.baseX, joy.baseY, joy.R, 0, Math.PI*2);
+    ctx.fillStyle = 'rgba(255,255,255,0.15)'; ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(joy.x, joy.y, 30, 0, Math.PI*2);
+    ctx.fillStyle = 'rgba(255,255,255,0.7)'; ctx.fill();
+  }
+
+  // Nút SÚT (cố định góc dưới phải)
+  btnShoot.x = W - 90;
+  btnShoot.y = H - 90;
+  ctx.beginPath();
+  ctx.arc(btnShoot.x, btnShoot.y, btnShoot.r, 0, Math.PI*2);
+  ctx.fillStyle = btnShoot.pressed ? 'rgba(255,80,80,0.9)' : 'rgba(255,255,255,0.25)';
+  ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.lineWidth = 3; ctx.stroke();
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 18px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('SÚT', btnShoot.x, btnShoot.y);
+}
+
+let lastTime = 0;
+function loop(t) {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+init();
+loop();
+</script>
+</body>
+</html>
