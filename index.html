@@ -17,25 +17,106 @@
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
 
-let W = 0, H = 0;
+// ===== CONSTANTS =====
+const SCOREBOARD_H = 72;
+const MATCH_DURATION = 90;        // 90 giây/trận
+const JOY_DEADZONE = 12;          // vùng chết joystick
+const PLAYER_SPEED = 3.5;         // ← giảm từ 5 → 3.5 (mượt hơn)
+const ENEMY_SPEED = 1.9;          // ← giảm từ 2.2 → 1.9
+const SPRINT_MULT = 1.7;          // nhân tốc độ khi sprint
 
 // ===== STATE =====
-const SCOREBOARD_H = 62;
-let homeScore = 0;
-let awayScore = 0;
-let goalMsg = null;
-let goalCooldown = 0;
+let W = 0, H = 0;
+let homeScore = 0, awayScore = 0;
+let goalMsg = null, goalCooldown = 0;
+let sprinting = false;
+let gameState = { timeLeft: MATCH_DURATION, isFullTime: false };
 
-const player = { x:0, y:0, r:22, speed:5, color:'#2196f3' };
-const enemy  = { x:0, y:0, r:22, speed:2.2, color:'#f44336' };
-const ball   = { x:0, y:0, r:10, vx:0, vy:0 };
+// Entities
+const player = { x:0, y:0, r:20, color:'#2196f3' };
+const enemy  = { x:0, y:0, r:20, color:'#f44336' };
+const ball   = { x:0, y:0, r:9, vx:0, vy:0 };
 
-const joy = { active:false, id:null, baseX:0, baseY:0, x:0, y:0, R:70 };
-const btnShoot = { x:0, y:0, r:45, pressed:false, id:null };
+// UI
+const joy      = { active:false, id:null, baseX:0, baseY:0, x:0, y:0, R:80 };
+const btnShoot = { x:0, y:0, r:42, pressed:false, id:null };
+const btnPass  = { x:0, y:0, r:30, pressed:false, id:null };
+const btnSprint= { x:0, y:0, r:30, pressed:false, id:null };
 
+// Field
 let goalWidth = 0, goalLeft = 0, goalRight = 0;
 let fieldTop = 0, fieldBot = 0;
 
+// ===== AUDIO =====
+let audioCtx = null;
+function ensureAudio() {
+  if (audioCtx) return;
+  try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch(e) {}
+}
+function playKick() {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.connect(gain); gain.connect(audioCtx.destination);
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(180, t);
+  osc.frequency.exponentialRampToValueAtTime(60, t + 0.08);
+  gain.gain.setValueAtTime(0.25, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.12);
+  osc.start(t); osc.stop(t + 0.15);
+}
+function playPass() {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.connect(gain); gain.connect(audioCtx.destination);
+  osc.type = 'sine';
+  osc.frequency.setValueAtTime(280, t);
+  osc.frequency.exponentialRampToValueAtTime(120, t + 0.06);
+  gain.gain.setValueAtTime(0.15, t);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
+  osc.start(t); osc.stop(t + 0.12);
+}
+function playGoal() {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime;
+  [523, 659, 784, 1047].forEach((freq, i) => {
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.connect(gain); gain.connect(audioCtx.destination);
+    osc.type = 'triangle';
+    osc.frequency.value = freq;
+    const start = t + i * 0.1;
+    gain.gain.setValueAtTime(0, start);
+    gain.gain.linearRampToValueAtTime(0.22, start + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.001, start + 0.3);
+    osc.start(start); osc.stop(start + 0.35);
+  });
+}
+function playWhistle() {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  osc.connect(gain); gain.connect(audioCtx.destination);
+  osc.type = 'square';
+  osc.frequency.setValueAtTime(2000, t);
+  osc.frequency.setValueAtTime(2200, t + 0.1);
+  osc.frequency.setValueAtTime(2000, t + 0.3);
+  gain.gain.setValueAtTime(0.07, t);
+  gain.gain.setValueAtTime(0.09, t + 0.05);
+  gain.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
+  osc.start(t); osc.stop(t + 0.55);
+}
+
+// ===== VIBRATE =====
+function vibrate(pattern) {
+  if (navigator.vibrate) navigator.vibrate(pattern);
+}
+
+// ===== RESIZE =====
 function resize() {
   const dpr = window.devicePixelRatio || 1;
   canvas.width = innerWidth * dpr;
@@ -43,28 +124,56 @@ function resize() {
   canvas.style.width = innerWidth + 'px';
   canvas.style.height = innerHeight + 'px';
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  W = innerWidth;
-  H = innerHeight;
+  W = innerWidth; H = innerHeight;
   goalWidth = W * 0.34;
   goalLeft = W/2 - goalWidth/2;
   goalRight = W/2 + goalWidth/2;
   fieldTop = SCOREBOARD_H;
   fieldBot = H - 10;
+  layoutButtons();
+}
+function layoutButtons() {
+  btnShoot.x  = W - 70;  btnShoot.y  = H - 90;
+  btnPass.x   = W - 155; btnPass.y   = H - 70;
+  btnSprint.x = W - 70;  btnSprint.y = H - 180;
 }
 window.addEventListener('resize', resize);
 
 // ===== TOUCH =====
+function hitsBtn(x, y, b) {
+  return Math.hypot(x - b.x, y - b.y) < b.r + 14;
+}
+function getRestartBtn() {
+  return { x: W/2 - 100, y: H*0.68, w: 200, h: 60 };
+}
+
 function onTouchStart(ev) {
+  ensureAudio();
   for (const t of ev.changedTouches) {
     const x = t.clientX, y = t.clientY;
+
+    // Full time screen
+    if (gameState.isFullTime) {
+      const rb = getRestartBtn();
+      if (x > rb.x && x < rb.x + rb.w && y > rb.y && y < rb.y + rb.h) {
+        restartGame();
+      }
+      continue;
+    }
+
     if (y < SCOREBOARD_H) continue;
-    if (x > W/2) {
-      btnShoot.pressed = true;
-      btnShoot.id = t.identifier;
+
+    // Buttons take priority
+    if (hitsBtn(x, y, btnShoot)) {
+      btnShoot.pressed = true; btnShoot.id = t.identifier;
       shoot();
-    } else {
-      joy.active = true;
-      joy.id = t.identifier;
+    } else if (hitsBtn(x, y, btnPass)) {
+      btnPass.pressed = true; btnPass.id = t.identifier;
+      doPass();
+    } else if (hitsBtn(x, y, btnSprint)) {
+      btnSprint.pressed = true; btnSprint.id = t.identifier;
+    } else if (x < W/2) {
+      joy.active = true; joy.id = t.identifier;
       joy.baseX = x; joy.baseY = y;
       joy.x = x; joy.y = y;
     }
@@ -86,8 +195,10 @@ function onTouchMove(ev) {
 }
 function onTouchEnd(ev) {
   for (const t of ev.changedTouches) {
-    if (t.identifier === joy.id) { joy.active = false; joy.id = null; }
+    if (t.identifier === joy.id)      { joy.active = false; joy.id = null; }
     if (t.identifier === btnShoot.id) { btnShoot.pressed = false; btnShoot.id = null; }
+    if (t.identifier === btnPass.id)  { btnPass.pressed = false; btnPass.id = null; }
+    if (t.identifier === btnSprint.id){ btnSprint.pressed = false; btnSprint.id = null; }
   }
   ev.preventDefault();
 }
@@ -96,73 +207,128 @@ canvas.addEventListener('touchmove', onTouchMove, {passive:false});
 canvas.addEventListener('touchend', onTouchEnd, {passive:false});
 canvas.addEventListener('touchcancel', onTouchEnd, {passive:false});
 
+// ===== ACTIONS =====
+function getAimDir(defaultToGoal) {
+  if (joy.active) {
+    const dx = joy.x - joy.baseX;
+    const dy = joy.y - joy.baseY;
+    const len = Math.hypot(dx, dy);
+    if (len > JOY_DEADZONE) return { x: dx/len, y: dy/len };
+  }
+  if (defaultToGoal) {
+    const tx = W/2, ty = fieldTop;
+    const len = Math.hypot(tx - ball.x, ty - ball.y) || 1;
+    return { x: (tx - ball.x)/len, y: (ty - ball.y)/len };
+  }
+  return { x: 0, y: -1 };
+}
+
 function shoot() {
   const d = Math.hypot(ball.x - player.x, ball.y - player.y);
   if (d < player.r + ball.r + 28) {
-    let ax = 0, ay = -1;
-    if (joy.active) {
-      const dx = joy.x - joy.baseX;
-      const dy = joy.y - joy.baseY;
-      const len = Math.hypot(dx, dy);
-      if (len > 10) { ax = dx/len; ay = dy/len; }
-    } else {
-      const tx = W/2, ty = fieldTop;
-      const len = Math.hypot(tx - ball.x, ty - ball.y) || 1;
-      ax = (tx - ball.x)/len;
-      ay = (ty - ball.y)/len;
-    }
-    ball.vx = ax * 17;
-    ball.vy = ay * 17;
+    const dir = getAimDir(true);
+    ball.vx = dir.x * 17;
+    ball.vy = dir.y * 17;
+    playKick();
+    vibrate([30]);
+  }
+}
+function doPass() {
+  const d = Math.hypot(ball.x - player.x, ball.y - player.y);
+  if (d < player.r + ball.r + 28) {
+    const dir = getAimDir(false);
+    ball.vx = dir.x * 10;
+    ball.vy = dir.y * 10;
+    playPass();
+    vibrate([15]);
   }
 }
 
 // ===== LOGIC =====
-function init() { resize(); resetPositions(); }
+function init() {
+  resize();
+  restartGame();
+}
 
 function resetPositions() {
   player.x = W/2; player.y = H - 140;
-  enemy.x = W/2;  enemy.y = fieldTop + 90;
-  ball.x = W/2;   ball.y = H/2;
+  enemy.x  = W/2; enemy.y  = fieldTop + 90;
+  ball.x   = W/2; ball.y   = H/2;
   ball.vx = 0; ball.vy = 0;
 }
 
-function triggerGoal(msg, color) {
-  goalMsg = { text: msg, color: color, timer: 110 };
+function restartGame() {
+  homeScore = 0; awayScore = 0;
+  gameState.timeLeft = MATCH_DURATION;
+  gameState.isFullTime = false;
+  goalMsg = null; goalCooldown = 0;
+  resetPositions();
+}
+
+function triggerGoal(msg, isHome) {
+  goalMsg = { text: msg, timer: 110, isHome: isHome };
   goalCooldown = 150;
   ball.vx = 0; ball.vy = 0;
+  playGoal();
+  vibrate([80, 40, 80, 40, 200]);
 }
 
-function update() {
-  if (goalCooldown > 0) goalCooldown--;
+function update(dt) {
+  // Timer
+  if (!gameState.isFullTime && !goalMsg) {
+    gameState.timeLeft -= dt;
+    if (gameState.timeLeft <= 0) {
+      gameState.timeLeft = 0;
+      gameState.isFullTime = true;
+      playWhistle();
+      vibrate([200]);
+    }
+  }
+
+  if (gameState.isFullTime) return;
+
+  // Goal celebration pause
   if (goalMsg) {
     goalMsg.timer--;
     if (goalMsg.timer <= 0) { goalMsg = null; resetPositions(); }
     return;
   }
-  // Player
+  if (goalCooldown > 0) goalCooldown--;
+
+  // Player movement (analog + deadzone)
   if (joy.active) {
     const dx = joy.x - joy.baseX;
     const dy = joy.y - joy.baseY;
     const d = Math.hypot(dx, dy);
-    if (d > 8) {
-      player.x += (dx/d) * player.speed;
-      player.y += (dy/d) * player.speed;
+    if (d > JOY_DEADZONE) {
+      const intensity = Math.min(1, (d - JOY_DEADZONE) / (joy.R - JOY_DEADZONE));
+      const spd = PLAYER_SPEED * (btnSprint.pressed ? SPRINT_MULT : 1);
+      player.x += (dx/d) * spd * intensity;
+      player.y += (dy/d) * spd * intensity;
     }
   }
+  sprinting = btnSprint.pressed && joy.active;
   player.x = Math.max(player.r, Math.min(W - player.r, player.x));
   player.y = Math.max(fieldTop + player.r, Math.min(H - player.r, player.y));
 
-  // AI
+  // AI: chase ball + simple wall avoidance
   const ax = ball.x - enemy.x, ay = ball.y - enemy.y;
   const ad = Math.hypot(ax, ay);
   if (ad > 1) {
-    enemy.x += (ax/ad) * enemy.speed;
-    enemy.y += (ay/ad) * enemy.speed;
+    let mx = ax/ad, my = ay/ad;
+    const margin = 40;
+    if (enemy.x < margin)              mx += 1.2;
+    if (enemy.x > W - margin)          mx -= 1.2;
+    if (enemy.y < fieldTop + margin)   my += 1.2;
+    if (enemy.y > H - margin)          my -= 1.2;
+    const ml = Math.hypot(mx, my) || 1;
+    enemy.x += (mx/ml) * ENEMY_SPEED;
+    enemy.y += (my/ml) * ENEMY_SPEED;
   }
   enemy.x = Math.max(enemy.r, Math.min(W - enemy.r, enemy.x));
   enemy.y = Math.max(fieldTop + enemy.r, Math.min(H - enemy.r, enemy.y));
 
-  // Va chạm
+  // Ball collision with players
   [player, enemy].forEach(p => {
     const d = Math.hypot(ball.x - p.x, ball.y - p.y);
     if (d < p.r + ball.r && d > 0.01) {
@@ -173,7 +339,7 @@ function update() {
     }
   });
 
-  // Bóng di chuyển
+  // Ball movement + friction
   ball.x += ball.vx;
   ball.y += ball.vy;
   ball.vx *= 0.965;
@@ -181,27 +347,25 @@ function update() {
   if (Math.abs(ball.vx) < 0.05) ball.vx = 0;
   if (Math.abs(ball.vy) < 0.05) ball.vy = 0;
 
-  // Tường trái/phải
-  if (ball.x < ball.r) { ball.x = ball.r; ball.vx *= -0.8; }
+  // Side walls
+  if (ball.x < ball.r)     { ball.x = ball.r; ball.vx *= -0.8; }
   if (ball.x > W - ball.r) { ball.x = W - ball.r; ball.vx *= -0.8; }
 
-  // ===== GHI BÀN =====
-  // Khung trên → PLAYER ghi bàn
+  // Goals
   if (ball.y - ball.r < fieldTop + 8) {
     if (ball.x > goalLeft && ball.x < goalRight && goalCooldown <= 0) {
       homeScore++;
-      triggerGoal('BẠN GHI BÀN!', '#4caf50');
+      triggerGoal('BẠN GHI BÀN!', true);
       return;
     } else {
       ball.y = fieldTop + 8 + ball.r;
       ball.vy *= -0.8;
     }
   }
-  // Khung dưới → AI ghi bàn
   if (ball.y + ball.r > fieldBot - 8) {
     if (ball.x > goalLeft && ball.x < goalRight && goalCooldown <= 0) {
       awayScore++;
-      triggerGoal('ĐỐI THỦ GHI BÀN', '#f44336');
+      triggerGoal('ĐỐI THỦ GHI BÀN', false);
       return;
     } else {
       ball.y = fieldBot - 8 - ball.r;
@@ -222,11 +386,11 @@ function roundRect(x, y, w, h, r) {
 }
 
 function draw() {
-  // Sân
+  // Field
   ctx.fillStyle = '#2e7d32';
   ctx.fillRect(0, fieldTop, W, H - fieldTop);
 
-  // Sọc cỏ
+  // Grass stripes
   const stripes = 10;
   const sh = (H - fieldTop) / stripes;
   ctx.fillStyle = 'rgba(0,0,0,0.06)';
@@ -234,7 +398,7 @@ function draw() {
     if (i % 2 === 1) ctx.fillRect(0, fieldTop + i * sh, W, sh);
   }
 
-  // Vạch sân
+  // Lines
   ctx.strokeStyle = 'rgba(255,255,255,0.55)';
   ctx.lineWidth = 2;
   ctx.beginPath();
@@ -244,44 +408,35 @@ function draw() {
   ctx.beginPath();
   ctx.arc(W/2, (fieldTop + fieldBot) / 2, Math.min(W, H) * 0.13, 0, Math.PI*2);
   ctx.stroke();
-  // Vùng cấm
   ctx.strokeRect(W/2 - W*0.22, fieldTop, W*0.44, H*0.13);
   ctx.strokeRect(W/2 - W*0.22, fieldBot - H*0.13, W*0.44, H*0.13);
 
-  // ===== KHUNG THÀNH =====
-  // Khung trên
+  // Goal frames
   ctx.strokeStyle = 'rgba(255,255,255,0.35)';
   ctx.lineWidth = 1;
   for (let i = 0; i <= 12; i++) {
     const x = goalLeft + (goalWidth * i / 12);
-    ctx.beginPath();
-    ctx.moveTo(x, fieldTop);
-    ctx.lineTo(x, fieldTop + 14);
-    ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x, fieldTop); ctx.lineTo(x, fieldTop + 14); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x, fieldBot - 14); ctx.lineTo(x, fieldBot); ctx.stroke();
   }
   ctx.beginPath();
-  ctx.moveTo(goalLeft, fieldTop + 14);
-  ctx.lineTo(goalRight, fieldTop + 14);
-  ctx.stroke();
+  ctx.moveTo(goalLeft, fieldTop + 14); ctx.lineTo(goalRight, fieldTop + 14); ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(goalLeft, fieldBot - 14); ctx.lineTo(goalRight, fieldBot - 14); ctx.stroke();
   ctx.fillStyle = '#fff';
   ctx.fillRect(goalLeft, fieldTop, goalWidth, 5);
-
-  // Khung dưới
-  for (let i = 0; i <= 12; i++) {
-    const x = goalLeft + (goalWidth * i / 12);
-    ctx.beginPath();
-    ctx.moveTo(x, fieldBot - 14);
-    ctx.lineTo(x, fieldBot);
-    ctx.stroke();
-  }
-  ctx.beginPath();
-  ctx.moveTo(goalLeft, fieldBot - 14);
-  ctx.lineTo(goalRight, fieldBot - 14);
-  ctx.stroke();
-  ctx.fillStyle = '#fff';
   ctx.fillRect(goalLeft, fieldBot - 5, goalWidth, 5);
 
-  // ===== CẦU THỦ =====
+  // Sprint glow
+  if (sprinting) {
+    ctx.beginPath();
+    ctx.arc(player.x, player.y, player.r + 7, 0, Math.PI*2);
+    ctx.strokeStyle = 'rgba(255,235,59,0.75)';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+  }
+
+  // Players
   [player, enemy].forEach(p => {
     ctx.fillStyle = 'rgba(0,0,0,0.25)';
     ctx.beginPath(); ctx.arc(p.x, p.y + 4, p.r, 0, Math.PI*2); ctx.fill();
@@ -289,12 +444,12 @@ function draw() {
     ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI*2); ctx.fill();
     ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.stroke();
     ctx.fillStyle = '#fff';
-    ctx.font = 'bold 16px sans-serif';
+    ctx.font = 'bold 14px sans-serif';
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
     ctx.fillText(p === player ? '10' : '9', p.x, p.y + 1);
   });
 
-  // ===== BÓNG =====
+  // Ball
   ctx.fillStyle = 'rgba(0,0,0,0.3)';
   ctx.beginPath(); ctx.arc(ball.x, ball.y + 3, ball.r, 0, Math.PI*2); ctx.fill();
   ctx.fillStyle = '#fff';
@@ -303,14 +458,14 @@ function draw() {
   ctx.fillStyle = '#222';
   ctx.beginPath(); ctx.arc(ball.x, ball.y, ball.r * 0.35, 0, Math.PI*2); ctx.fill();
 
-  // ===== JOYSTICK =====
+  // Joystick
   if (joy.active) {
     ctx.beginPath(); ctx.arc(joy.baseX, joy.baseY, joy.R, 0, Math.PI*2);
     ctx.fillStyle = 'rgba(255,255,255,0.13)'; ctx.fill();
     ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = 3; ctx.stroke();
     ctx.beginPath(); ctx.arc(joy.x, joy.y, 32, 0, Math.PI*2);
-    ctx.fillStyle = 'rgba(255,255,255,0.75)'; ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,0.9)'; ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.78)'; ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.95)'; ctx.lineWidth = 2; ctx.stroke();
   } else {
     ctx.beginPath(); ctx.arc(90, H - 100, 60, 0, Math.PI*2);
     ctx.strokeStyle = 'rgba(255,255,255,0.15)'; ctx.lineWidth = 2; ctx.stroke();
@@ -319,62 +474,44 @@ function draw() {
     ctx.fillText('DI CHUYỂN', 90, H - 100);
   }
 
-  // ===== NÚT SÚT =====
-  btnShoot.x = W - 90;
-  btnShoot.y = H - 100;
-  ctx.beginPath(); ctx.arc(btnShoot.x, btnShoot.y + 3, btnShoot.r, 0, Math.PI*2);
-  ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fill();
-  ctx.beginPath(); ctx.arc(btnShoot.x, btnShoot.y, btnShoot.r, 0, Math.PI*2);
-  const grd = ctx.createRadialGradient(btnShoot.x, btnShoot.y - 10, 5, btnShoot.x, btnShoot.y, btnShoot.r);
-  if (btnShoot.pressed) {
-    grd.addColorStop(0, '#ff5252'); grd.addColorStop(1, '#b71c1c');
-  } else {
-    grd.addColorStop(0, '#ff7070'); grd.addColorStop(1, '#c62828');
-  }
-  ctx.fillStyle = grd; ctx.fill();
-  ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.stroke();
-  ctx.fillStyle = '#fff';
-  ctx.font = 'bold 20px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillText('SÚT', btnShoot.x, btnShoot.y);
+  // Buttons
+  drawRoundBtn(btnShoot, 'SÚT', '#e53935', '#b71c1c', 20);
+  drawRoundBtn(btnPass, 'CHUYỀN', '#1e88e5', '#0d47a1', 11);
+  drawRoundBtn(btnSprint, 'CHẠY', '#43a047', '#1b5e20', 11);
 
-  // ===== SCOREBOARD =====
+  // Scoreboard
   drawScoreboard();
 
-  // ===== GOAL CELEBRATION =====
-  if (goalMsg) {
-    const total = 110, t = goalMsg.timer;
-    let a = 1;
-    if (t > total - 12) a = (total - t) / 12;
-    else if (t < 22) a = t / 22;
+  // Goal overlay
+  if (goalMsg) drawGoalOverlay();
 
-    ctx.fillStyle = `rgba(0,0,0,${0.78 * a})`;
-    ctx.fillRect(0, H/2 - 100, W, 200);
+  // Full time overlay
+  if (gameState.isFullTime) drawFullTime();
+}
 
-    // Viền vàng
-    ctx.strokeStyle = `rgba(255,215,0,${a})`;
-    ctx.lineWidth = 4;
-    ctx.strokeRect(0, H/2 - 100, W, 200);
+function drawRoundBtn(b, label, c1, c2, fontSize) {
+  // Shadow
+  ctx.beginPath(); ctx.arc(b.x, b.y + 3, b.r, 0, Math.PI*2);
+  ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fill();
+  // Gradient
+  const grd = ctx.createRadialGradient(b.x, b.y - b.r*0.3, 3, b.x, b.y, b.r);
+  if (b.pressed) { grd.addColorStop(0, '#ffffff'); grd.addColorStop(0.3, c1); grd.addColorStop(1, c2); }
+  else          { grd.addColorStop(0, c1); grd.addColorStop(1, c2); }
+  ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI*2);
+  ctx.fillStyle = grd; ctx.fill();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.stroke();
+  // Label
+  ctx.fillStyle = '#fff';
+  ctx.font = `bold ${fontSize}px sans-serif`;
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(label, b.x, b.y);
+}
 
-    ctx.fillStyle = `rgba(255,215,0,${a})`;
-    ctx.font = 'bold 52px sans-serif';
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText('GOAL!', W/2, H/2 - 35);
-
-    ctx.fillStyle = `rgba(255,255,255,${a})`;
-    ctx.font = 'bold 20px sans-serif';
-    ctx.fillText(goalMsg.text, W/2, H/2 + 30);
-
-    // Tỉ số hiện tại
-    ctx.font = 'bold 28px sans-serif';
-    ctx.fillStyle = `rgba(76,175,80,${a})`;
-    ctx.fillText(String(homeScore), W/2 - 40, H/2 + 75);
-    ctx.fillStyle = `rgba(255,255,255,${a})`;
-    ctx.font = 'bold 22px sans-serif';
-    ctx.fillText('-', W/2, H/2 + 75);
-    ctx.fillStyle = `rgba(244,67,54,${a})`;
-    ctx.font = 'bold 28px sans-serif';
-    ctx.fillText(String(awayScore), W/2 + 40, H/2 + 75);
-  }
+function formatTime(sec) {
+  sec = Math.max(0, Math.ceil(sec));
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return m + ':' + (s < 10 ? '0' + s : s);
 }
 
 function drawScoreboard() {
@@ -386,23 +523,19 @@ function drawScoreboard() {
   const cy = SCOREBOARD_H / 2;
   const logoR = 19;
 
-  // ===== LOGO ĐỘI BẠN (trái) =====
+  // Home logo
   const homeX = 60;
-  // Vòng ngoài
   ctx.beginPath(); ctx.arc(homeX, cy, logoR + 2, 0, Math.PI*2);
   ctx.fillStyle = 'rgba(255,255,255,0.2)'; ctx.fill();
-  // Logo chính
   const grd1 = ctx.createRadialGradient(homeX - 5, cy - 5, 3, homeX, cy, logoR);
   grd1.addColorStop(0, '#64b5f6'); grd1.addColorStop(1, '#0d47a1');
   ctx.beginPath(); ctx.arc(homeX, cy, logoR, 0, Math.PI*2);
   ctx.fillStyle = grd1; ctx.fill();
   ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
-  // Chữ trong logo
   ctx.fillStyle = '#fff';
   ctx.font = 'bold 14px sans-serif';
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText('FC', homeX, cy + 1);
-  // Tên đội
   ctx.fillStyle = '#fff';
   ctx.font = 'bold 11px sans-serif';
   ctx.textAlign = 'left';
@@ -411,7 +544,7 @@ function drawScoreboard() {
   ctx.font = '10px sans-serif';
   ctx.fillText('HOME', homeX + 26, cy + 8);
 
-  // ===== LOGO ĐỘI AI (phải) =====
+  // Away logo
   const awayX = W - 60;
   ctx.beginPath(); ctx.arc(awayX, cy, logoR + 2, 0, Math.PI*2);
   ctx.fillStyle = 'rgba(255,255,255,0.2)'; ctx.fill();
@@ -432,34 +565,49 @@ function drawScoreboard() {
   ctx.font = '10px sans-serif';
   ctx.fillText('AWAY', awayX - 26, cy + 8);
 
-  // ===== TỈ SỐ (giữa) =====
-  const sw = 96, sh = 40;
+  // Score box + timer
+  const sw = 116, sh = 56;
   const sx = W/2 - sw/2, sy = cy - sh/2;
   ctx.fillStyle = 'rgba(255,255,255,0.08)';
   roundRect(sx, sy, sw, sh, 10); ctx.fill();
   ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = 1.5;
   roundRect(sx, sy, sw, sh, 10); ctx.stroke();
 
+  // Score
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillStyle = '#4caf50';
-  ctx.font = 'bold 24px sans-serif';
-  ctx.fillText(String(homeScore), W/2 - 20, cy + 1);
+  ctx.font = 'bold 22px sans-serif';
+  ctx.fillText(String(homeScore), W/2 - 20, cy - 6);
   ctx.fillStyle = 'rgba(255,255,255,0.7)';
-  ctx.font = 'bold 16px sans-serif';
-  ctx.fillText('-', W/2, cy + 1);
+  ctx.font = 'bold 15px sans-serif';
+  ctx.fillText('-', W/2, cy - 6);
   ctx.fillStyle = '#f44336';
-  ctx.font = 'bold 24px sans-serif';
-  ctx.fillText(String(awayScore), W/2 + 20, cy + 1);
+  ctx.font = 'bold 22px sans-serif';
+  ctx.fillText(String(awayScore), W/2 + 20, cy - 6);
+
+  // Timer
+  const tColor = gameState.timeLeft < 10 ? '#ff5252' : '#ffd54f';
+  ctx.fillStyle = tColor;
+  ctx.font = 'bold 12px sans-serif';
+  ctx.fillText('⏱ ' + formatTime(gameState.timeLeft), W/2, cy + 16);
 }
 
-function loop() {
-  update();
-  draw();
-  requestAnimationFrame(loop);
-}
+function drawGoalOverlay() {
+  const total = 110, t = goalMsg.timer;
+  let a = 1;
+  if (t > total - 12) a = (total - t) / 12;
+  else if (t < 22) a = t / 22;
 
-init();
-loop();
-</script>
-</body>
-</html>
+  ctx.fillStyle = `rgba(0,0,0,${0.78 * a})`;
+  ctx.fillRect(0, H/2 - 100, W, 200);
+  ctx.strokeStyle = `rgba(255,215,0,${a})`;
+  ctx.lineWidth = 4;
+  ctx.strokeRect(0, H/2 - 100, W, 200);
+
+  ctx.fillStyle = `rgba(255,215,0,${a})`;
+  ctx.font = 'bold 52px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('GOAL!', W/2, H/2 - 35);
+
+  ctx.fillStyle = `rgba(255,255,255,${a})`;
+  ctx.font = 'bol
