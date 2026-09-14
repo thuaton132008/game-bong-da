@@ -303,33 +303,85 @@ function update(dt) {
   player.x = Math.max(player.r, Math.min(WORLD_W - player.r, player.x));
   player.y = Math.max(fieldTop + player.r, Math.min(WORLD_H - player.r, player.y));
 
+  // ====== AI NÂNG CAO ======
+const distToBall = Math.hypot(ball.x - enemy.x, ball.y - enemy.y);
+const aiHasBall = distToBall < enemy.r + ball.r + 10;
+
+// Khung đích của AI = khung DƯỚI (đối thủ của AI là player)
+const aiGoalX = WORLD_W / 2;
+const aiGoalY = fieldBot;
+
+if (aiHasBall) {
+  // Bước 1: Hướng tới khung dưới
+  let dirX = aiGoalX - enemy.x;
+  let dirY = aiGoalY - enemy.y;
+  let len = Math.hypot(dirX, dirY) || 1;
+  dirX /= len; dirY /= len;
+
+  // Bước 2: Né player nếu ở gần
+  const dxp = enemy.x - player.x;
+  const dyp = enemy.y - player.y;
+  const distP = Math.hypot(dxp, dyp) || 1;
+  if (distP < 120) {
+    const push = (120 - distP) / 120 * 1.5;
+    dirX += (dxp / distP) * push;
+    dirY += (dyp / distP) * push;
+    len = Math.hypot(dirX, dirY) || 1;
+    dirX /= len; dirY /= len;
+  }
+
+  // Bước 3: Di chuyển AI
+  const aiSpd = ENEMY_SPEED * 1.25;
+  enemy.x += dirX * aiSpd;
+  enemy.y += dirY * aiSpd;
+
+  // Bước 4: Kéo bóng theo (dribble)
+  const leadDist = enemy.r + ball.r - 2;
+  const tbx = enemy.x + dirX * leadDist;
+  const tby = enemy.y + dirY * leadDist;
+  ball.x += (tbx - ball.x) * 0.4;
+  ball.y += (tby - ball.y) * 0.4;
+  ball.vx = 0;
+  ball.vy = 0;
+
+  // Bước 5: Sút khi vào vùng cấm
+  const distGoal = Math.hypot(aiGoalX - enemy.x, aiGoalY - enemy.y);
+  if (distGoal < penaltyH * 1.3 && goalCooldown <= 0) {
+    const sx = aiGoalX - ball.x;
+    const sy = aiGoalY - ball.y;
+    const sl = Math.hypot(sx, sy) || 1;
+    ball.vx = (sx / sl) * 17;
+    ball.vy = (sy / sl) * 17;
+    playKick();
+  }
+} else {
+  // AI không có bóng → đuổi bóng
   const ax = ball.x - enemy.x, ay = ball.y - enemy.y;
   const ad = Math.hypot(ax, ay);
   if (ad > 1) {
-    let mx = ax/ad, my = ay/ad;
+    let mx = ax / ad, my = ay / ad;
     const margin = 40;
     if (enemy.x < margin) mx += 1.2;
     if (enemy.x > WORLD_W - margin) mx -= 1.2;
     if (enemy.y < fieldTop + margin) my += 1.2;
     if (enemy.y > WORLD_H - margin) my -= 1.2;
     const ml = Math.hypot(mx, my) || 1;
-    enemy.x += (mx/ml) * ENEMY_SPEED;
-    enemy.y += (my/ml) * ENEMY_SPEED;
+    enemy.x += (mx / ml) * ENEMY_SPEED;
+    enemy.y += (my / ml) * ENEMY_SPEED;
   }
-  enemy.x = Math.max(enemy.r, Math.min(WORLD_W - enemy.r, enemy.x));
-  enemy.y = Math.max(fieldTop + enemy.r, Math.min(WORLD_H - enemy.r, enemy.y));
+}
+enemy.x = Math.max(enemy.r, Math.min(WORLD_W - enemy.r, enemy.x));
+enemy.y = Math.max(fieldTop + enemy.r, Math.min(WORLD_H - enemy.r, enemy.y));
 
+// Player va chạm bóng (khi player không bị AI giữ bóng)
+if (!aiHasBall) {
   const d1 = Math.hypot(ball.x - player.x, ball.y - player.y);
   if (d1 < player.r + ball.r && d1 > 0.01) {
     const ang = Math.atan2(ball.y - player.y, ball.x - player.x);
     ball.vx = Math.cos(ang) * 7;
     ball.vy = Math.sin(ang) * 7;
   }
-  const d2 = Math.hypot(ball.x - enemy.x, ball.y - enemy.y);
-  if (d2 < enemy.r + ball.r && d2 > 0.01) {
-    const ang = Math.atan2(ball.y - enemy.y, ball.x - enemy.x);
-    ball.vx = Math.cos(ang) * 5;
-    ball.vy = Math.sin(ang) * 5;
+}
   }
 
   ball.x += ball.vx;
