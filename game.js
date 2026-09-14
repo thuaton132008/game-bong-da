@@ -571,4 +571,103 @@ function drawScoreboard() {
   const aw = W - 60;
   ctx.beginPath(); ctx.arc(aw, cy, lr + 2, 0, Math.PI*2);
   ctx.fillStyle = 'rgba(255,255,255,0.2)'; ctx.fill();
-  const g2 = ctx.createRadialGrad
+    const g2 = ctx.createRadialGradient(aw-5, cy-5, 3, aw, cy, lr);
+  g2.addColorStop(0, '#ef5350'); g2.addColorStop(1, '#b71c1c');
+  ctx.beginPath(); ctx.arc(aw, cy, lr, 0, Math.PI*2);
+  ctx.fillStyle = g2; ctx.fill();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 14px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('AI', aw, cy + 1);
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 11px sans-serif'; ctx.textAlign = 'right';
+  ctx.fillText('DOI AI', aw - 26, cy - 6);
+  ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.font = '10px sans-serif';
+  ctx.fillText('AWAY', aw - 26, cy + 8);
+
+  const sw = 116, sh = 56;
+  const sx = W/2 - sw/2, sy = cy - sh/2;
+  ctx.fillStyle = 'rgba(255,255,255,0.08)';
+  roundRect(sx, sy, sw, sh, 10); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = 1.5;
+  roundRect(sx, sy, sw, sh, 10); ctx.stroke();
+
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#4caf50'; ctx.font = 'bold 22px sans-serif';
+  ctx.fillText(String(homeScore), W/2 - 20, cy - 6);
+  ctx.fillStyle = 'rgba(255,255,255,0.7)'; ctx.font = 'bold 15px sans-serif';
+  ctx.fillText('-', W/2, cy - 6);
+  ctx.fillStyle = '#f44336'; ctx.font = 'bold 22px sans-serif';
+  ctx.fillText(String(awayScore), W/2 + 20, cy - 6);
+
+  const tc = gameState.timeLeft < 10 ? '#ff5252' : '#ffd54f';
+  ctx.fillStyle = tc; ctx.font = 'bold 12px sans-serif';
+  ctx.fillText(formatTime(gameState.timeLeft), W/2, cy + 16);
+}
+
+function drawGoalOverlay() {
+  const total = 110, t = goalMsg.timer;
+  let a = 1;
+  if (t > total - 12) a = (total - t) / 12;
+  else if (t < 22) a = t / 22;
+
+  ctx.fillStyle = 'rgba(0,0,0,' + (0.78*a) + ')';
+  ctx.fillRect(0, H/2 - 100, W, 200);
+  ctx.strokeStyle = 'rgba(255,215,0,' + a + ')'; ctx.lineWidth = 4;
+  ctx.strokeRect(0, H/2 - 100, W, 200);
+  ctx.fillStyle = 'rgba(255,215,0,' + a + ')';
+  ctx.font = 'bold 52px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('GOAL!', W/2, H/2 - 35);
+  ctx.fillStyle = 'rgba(255,255,255,' + a + ')';
+  ctx.font = 'bold 20px sans-serif';
+  ctx.fillText(goalMsg.text, W/2, H/2 + 30);
+  ctx.font = 'bold 28px sans-serif';
+  ctx.fillStyle = 'rgba(76,175,80,' + a + ')';
+  ctx.fillText(String(homeScore), W/2 - 40, H/2 + 75);
+  ctx.fillStyle = 'rgba(255,255,255,' + a + ')'; ctx.font = 'bold 22px sans-serif';
+  ctx.fillText('-', W/2, H/2 + 75);
+  ctx.fillStyle = 'rgba(244,67,54,' + a + ')'; ctx.font = 'bold 28px sans-serif';
+  ctx.fillText(String(awayScore), W/2 + 40, H/2 + 75);
+}
+
+function drawFullTime() {
+  ctx.fillStyle = 'rgba(0,0,0,0.85)';
+  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#ffd54f'; ctx.font = 'bold 42px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('FULL TIME', W/2, H * 0.22);
+  ctx.font = 'bold 66px sans-serif';
+  ctx.fillStyle = '#4caf50'; ctx.fillText(String(homeScore), W/2 - 65, H * 0.42);
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 40px sans-serif';
+  ctx.fillText('-', W/2, H * 0.42);
+  ctx.fillStyle = '#f44336'; ctx.font = 'bold 66px sans-serif';
+  ctx.fillText(String(awayScore), W/2 + 65, H * 0.42);
+
+  let rt, rc;
+  if (homeScore > awayScore)      { rt = 'CHIEN THANG!'; rc = '#4caf50'; }
+  else if (homeScore < awayScore) { rt = 'THAT BAI';     rc = '#f44336'; }
+  else                            { rt = 'HOA';          rc = '#ffd54f'; }
+  ctx.fillStyle = rc; ctx.font = 'bold 28px sans-serif';
+  ctx.fillText(rt, W/2, H * 0.55);
+
+  const rb = getRestartBtn();
+  const g = ctx.createLinearGradient(rb.x, rb.y, rb.x, rb.y + rb.h);
+  g.addColorStop(0, '#43a047'); g.addColorStop(1, '#1b5e20');
+  roundRect(rb.x, rb.y, rb.w, rb.h, 14); ctx.fillStyle = g; ctx.fill();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+  roundRect(rb.x, rb.y, rb.w, rb.h, 14); ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 22px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('CHOI LAI', rb.x + rb.w/2, rb.y + rb.h/2);
+}
+
+let lastTime = performance.now();
+function loop(now) {
+  const dt = Math.min(0.05, (now - lastTime) / 1000);
+  lastTime = now;
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+init();
+requestAnimationFrame(loop);
