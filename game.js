@@ -11,6 +11,18 @@ const WORLD_SCALE_Y = 1.8;
 const BALL_HOLD_SLOW = 0.8;
 const COUNTDOWN_TIME = 3;
 
+const STAMINA_MAX = 100;
+const STAMINA_DRAIN_WALK = 2.5;
+const STAMINA_DRAIN_SPRINT = 16;
+const STAMINA_REGEN = 11;
+const STAMINA_LOW = 20;
+const STAMINA_SLOW = 45;
+
+const TACKLE_DURATION = 0.35;
+const TACKLE_COOLDOWN = 0.9;
+const TACKLE_SPEED = 9;
+const TACKLE_STAMINA_COST = 22;
+
 let W = 0, H = 0;
 let WORLD_W = 0, WORLD_H = 0;
 let homeScore = 0, awayScore = 0;
@@ -24,14 +36,25 @@ let gameState = {
 };
 
 const camera = { y: 0 };
-const player = { x:0, y:0, r:20, color:'#2196f3' };
-const enemy  = { x:0, y:0, r:20, color:'#f44336' };
-const ball   = { x:0, y:0, r:9, vx:0, vy:0 };
+const player = {
+  x:0, y:0, r:20, color:'#2196f3',
+  stamina: STAMINA_MAX,
+  tackling: false,
+  tackleTimer: 0,
+  tackleCooldown: 0,
+  tackleDirX: 0, tackleDirY: -1
+};
+const enemy = {
+  x:0, y:0, r:20, color:'#f44336',
+  stamina: STAMINA_MAX
+};
+const ball = { x:0, y:0, r:9, vx:0, vy:0 };
 
 const joy       = { active:false, id:null, baseX:0, baseY:0, x:0, y:0, R:80 };
 const btnShoot  = { x:0, y:0, r:42, pressed:false, id:null };
 const btnPass   = { x:0, y:0, r:30, pressed:false, id:null };
 const btnSprint = { x:0, y:0, r:30, pressed:false, id:null };
+const btnTackle = { x:0, y:0, r:30, pressed:false, id:null };
 const btnPause  = { x:32, y:SCOREBOARD_H/2, r:18, pressed:false, id:null };
 
 let goalWidth = 0, goalLeft = 0, goalRight = 0;
@@ -68,6 +91,26 @@ function playPass() {
   g.gain.setValueAtTime(0.15, t);
   g.gain.exponentialRampToValueAtTime(0.001, t + 0.1);
   o.start(t); o.stop(t + 0.12);
+}
+
+function playTackle() {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime;
+  const n = audioCtx.sampleRate * 0.18;
+  const buf = audioCtx.createBuffer(1, n, audioCtx.sampleRate);
+  const d = buf.getChannelData(0);
+  for (let i=0;i<n;i++) d[i]=(Math.random()*2-1)*Math.pow(1-i/n,3);
+  const src = audioCtx.createBufferSource(); src.buffer = buf;
+  const g = audioCtx.createGain(); g.gain.value = 0.22;
+  src.connect(g); g.connect(audioCtx.destination);
+  src.start(t);
+  const o = audioCtx.createOscillator(), go = audioCtx.createGain();
+  o.connect(go); go.connect(audioCtx.destination);
+  o.type = 'sawtooth'; o.frequency.setValueAtTime(180, t);
+  o.frequency.exponentialRampToValueAtTime(60, t + 0.2);
+  go.gain.setValueAtTime(0.12, t);
+  go.gain.exponentialRampToValueAtTime(0.001, t + 0.22);
+  o.start(t); o.stop(t + 0.25);
 }
 
 function playGoal() {
@@ -135,9 +178,10 @@ function resize() {
 }
 
 function layoutButtons() {
-  btnShoot.x  = W - 70;  btnShoot.y  = H - 90;
-  btnPass.x   = W - 155; btnPass.y   = H - 70;
-  btnSprint.x = W - 70;  btnSprint.y = H - 180;
+  btnSprint.x = W - 70;  btnSprint.y = H - 90;
+  btnShoot.x  = W - 70;  btnShoot.y  = H - 180;
+  btnPass.x   = W - 155; btnPass.y   = H - 90;
+  btnTackle.x = W - 155; btnTackle.y = H - 180;
 }
 window.addEventListener('resize', resize);
 
@@ -188,6 +232,8 @@ function onTouchStart(ev) {
       btnShoot.pressed = true; btnShoot.id = t.identifier; shoot();
     } else if (hitsBtn(x, y, btnPass)) {
       btnPass.pressed = true; btnPass.id = t.identifier; doPass();
+    } else if (hitsBtn(x, y, btnTackle)) {
+      btnTackle.pressed = true; btnTackle.id = t.identifier; doTackle();
     } else if (hitsBtn(x, y, btnSprint)) {
       btnSprint.pressed = true; btnSprint.id = t.identifier;
     } else if (x < W/2) {
@@ -218,6 +264,7 @@ function onTouchEnd(ev) {
     if (t.identifier === btnShoot.id)  { btnShoot.pressed = false; btnShoot.id = null; }
     if (t.identifier === btnPass.id)   { btnPass.pressed = false; btnPass.id = null; }
     if (t.identifier === btnSprint.id) { btnSprint.pressed = false; btnSprint.id = null; }
+    if (t.identifier === btnTackle.id) { btnTackle.pressed = false; btnTackle.id = null; }
     if (t.identifier === btnPause.id)  { btnPause.pressed = false; btnPause.id = null; }
   }
   ev.preventDefault();
@@ -264,6 +311,38 @@ function doPass() {
     vibrate([15]);
   }
 }
+
+function doTackle() {
+  if (player.tackleCooldown > 0) return;
+  if (player.tackling) return;
+  if (player.stamina < TACKLE_STAMINA_COST) {
+    playBeep();
+    return;
+  }
+  player.tackling = true;
+  player.tackleTimer = TACKLE_DURATION;
+  player.tackleCooldown = TACKLE_COOLDOWN;
+  player.stamina -= TACKLE_STAMINA_COST;
+
+  let dirX = 0, dirY = -1;
+  if (joy.active) {
+    const dx = joy.x - joy.baseX;
+    const dy = joy.y - joy.baseY;
+    const len = Math.hypot(dx, dy);
+    if (len > JOY_DEADZONE) { dirX = dx/len; dirY = dy/len; }
+  } else {
+    const bdx = ball.x - player.x;
+    const bdy = ball.y - player.y;
+    const bl = Math.hypot(bdx, bdy) || 1;
+    dirX = bdx/bl; dirY = bdy/bl;
+  }
+  player.tackleDirX = dirX;
+  player.tackleDirY = dirY;
+
+  playTackle();
+  vibrate([40]);
+        }
+
 function startCountdown() {
   homeScore = 0; awayScore = 0;
   gameState.timeLeft = MATCH_DURATION;
@@ -271,6 +350,10 @@ function startCountdown() {
   gameState.isFullTime = false;
   gameState.screen = 'countdown';
   goalMsg = null; goalCooldown = 0;
+  player.stamina = STAMINA_MAX;
+  player.tackling = false;
+  player.tackleCooldown = 0;
+  enemy.stamina = STAMINA_MAX;
   resetPositions();
 }
 
@@ -304,6 +387,12 @@ function updateCamera() {
   camera.y += (targetY - camera.y) * 0.12;
 }
 
+function speedMultFromStamina(st) {
+  if (st < STAMINA_LOW) return 0.65;
+  if (st < STAMINA_SLOW) return 0.85;
+  return 1;
+}
+
 function update(dt) {
   if (gameState.screen === 'menu') return;
   if (gameState.screen === 'paused') return;
@@ -314,26 +403,22 @@ function update(dt) {
     gameState.countdown -= dt;
     const after = Math.ceil(gameState.countdown);
     if (after !== before && after > 0) {
-      playBeep();
-      vibrate([20]);
+      playBeep(); vibrate([20]);
     }
     if (gameState.countdown <= 0) {
       gameState.screen = 'playing';
-      playWhistle();
-      vibrate([100]);
+      playWhistle(); vibrate([100]);
     }
     return;
   }
 
-  // screen === 'playing'
   if (!goalMsg) {
     gameState.timeLeft -= dt;
     if (gameState.timeLeft <= 0) {
       gameState.timeLeft = 0;
       gameState.isFullTime = true;
       gameState.screen = 'fulltime';
-      playWhistle();
-      vibrate([200]);
+      playWhistle(); vibrate([200]);
       return;
     }
   }
@@ -344,25 +429,67 @@ function update(dt) {
   }
   if (goalCooldown > 0) goalCooldown--;
 
+  // ===== TACKLE COOLDOWN =====
+  if (player.tackleCooldown > 0) player.tackleCooldown -= dt;
+
+  // ===== PLAYER MOVEMENT =====
   const distPB = Math.hypot(ball.x - player.x, ball.y - player.y);
   const playerHasBall = distPB < player.r + ball.r + 8;
 
-  if (joy.active) {
-    const dx = joy.x - joy.baseX;
-    const dy = joy.y - joy.baseY;
-    const d = Math.hypot(dx, dy);
-    if (d > JOY_DEADZONE) {
-      const intensity = Math.min(1, (d - JOY_DEADZONE) / (joy.R - JOY_DEADZONE));
-      let spd = PLAYER_SPEED * (btnSprint.pressed ? SPRINT_MULT : 1);
-      if (playerHasBall) spd *= BALL_HOLD_SLOW;
-      player.x += (dx/d) * spd * intensity;
-      player.y += (dy/d) * spd * intensity;
+  if (player.tackling) {
+    // Slide motion
+    player.tackleTimer -= dt;
+    player.x += player.tackleDirX * TACKLE_SPEED * 60 * dt;
+    player.y += player.tackleDirY * TACKLE_SPEED * 60 * dt;
+
+    // Hit ball during slide?
+    const dB = Math.hypot(ball.x - player.x, ball.y - player.y);
+    if (dB < player.r + ball.r + 12) {
+      // Steal ball
+      ball.vx = player.tackleDirX * 5;
+      ball.vy = player.tackleDirY * 5;
+    }
+
+    if (player.tackleTimer <= 0) {
+      player.tackling = false;
+    }
+  } else {
+    if (joy.active) {
+      const dx = joy.x - joy.baseX;
+      const dy = joy.y - joy.baseY;
+      const d = Math.hypot(dx, dy);
+      if (d > JOY_DEADZONE) {
+        const intensity = Math.min(1, (d - JOY_DEADZONE) / (joy.R - JOY_DEADZONE));
+        const canSprint = btnSprint.pressed && player.stamina > STAMINA_LOW;
+        let spd = PLAYER_SPEED * (canSprint ? SPRINT_MULT : 1);
+        spd *= speedMultFromStamina(player.stamina);
+        if (playerHasBall) spd *= BALL_HOLD_SLOW;
+        player.x += (dx/d) * spd * intensity;
+        player.y += (dy/d) * spd * intensity;
+      }
     }
   }
-  sprinting = btnSprint.pressed && joy.active && !playerHasBall;
+  sprinting = btnSprint.pressed && joy.active && !playerHasBall
+              && player.stamina > STAMINA_LOW && !player.tackling;
+
   player.x = Math.max(player.r, Math.min(WORLD_W - player.r, player.x));
   player.y = Math.max(fieldTop + player.r, Math.min(WORLD_H - player.r, player.y));
 
+  // ===== PLAYER STAMINA =====
+  let drain = 0;
+  if (player.tackling) {
+    drain = 0;
+  } else if (joy.active) {
+    const d = Math.hypot(joy.x - joy.baseX, joy.y - joy.baseY);
+    if (d > JOY_DEADZONE) {
+      drain = sprinting ? STAMINA_DRAIN_SPRINT : STAMINA_DRAIN_WALK;
+    }
+  }
+  if (drain > 0) player.stamina -= drain * dt;
+  else player.stamina += STAMINA_REGEN * dt;
+  player.stamina = Math.max(0, Math.min(STAMINA_MAX, player.stamina));
+
+  // ===== AI =====
   const distToBall = Math.hypot(ball.x - enemy.x, ball.y - enemy.y);
   const aiHasBall = distToBall < enemy.r + ball.r + 10;
   const aiGoalX = WORLD_W / 2;
@@ -385,9 +512,10 @@ function update(dt) {
       dirX /= len; dirY /= len;
     }
 
-    const aiSpd = ENEMY_SPEED * BALL_HOLD_SLOW;
+    const aiSpd = ENEMY_SPEED * BALL_HOLD_SLOW * speedMultFromStamina(enemy.stamina);
     enemy.x += dirX * aiSpd;
     enemy.y += dirY * aiSpd;
+    enemy.stamina -= 3 * dt;
 
     const leadDist = enemy.r + ball.r - 2;
     const tbx = enemy.x + dirX * leadDist;
@@ -417,13 +545,20 @@ function update(dt) {
       if (enemy.y < fieldTop + margin) my += 1.2;
       if (enemy.y > WORLD_H - margin) my -= 1.2;
       const ml = Math.hypot(mx, my) || 1;
-      enemy.x += (mx / ml) * ENEMY_SPEED;
-      enemy.y += (my / ml) * ENEMY_SPEED;
+      const spd = ENEMY_SPEED * speedMultFromStamina(enemy.stamina);
+      enemy.x += (mx / ml) * spd;
+      enemy.y += (my / ml) * spd;
     }
+    enemy.stamina -= 2 * dt;
   }
+  enemy.stamina = Math.max(0, Math.min(STAMINA_MAX, enemy.stamina));
+  if (!aiHasBall && !joy.active) enemy.stamina += STAMINA_REGEN * dt;
+  enemy.stamina = Math.max(0, Math.min(STAMINA_MAX, enemy.stamina));
+
   enemy.x = Math.max(enemy.r, Math.min(WORLD_W - enemy.r, enemy.x));
   enemy.y = Math.max(fieldTop + enemy.r, Math.min(WORLD_H - enemy.r, enemy.y));
 
+  // ===== BALL COLLISION =====
   if (!aiHasBall) {
     const d1 = Math.hypot(ball.x - player.x, ball.y - player.y);
     if (d1 < player.r + ball.r && d1 > 0.01) {
@@ -445,9 +580,7 @@ function update(dt) {
 
   if (ball.y - ball.r < fieldTop + 8) {
     if (ball.x > goalLeft && ball.x < goalRight && goalCooldown <= 0) {
-      homeScore++;
-      triggerGoal('BAN GHI BAN!', true);
-      return;
+      homeScore++; triggerGoal('BAN GHI BAN!', true); return;
     } else {
       ball.y = fieldTop + 8 + ball.r;
       ball.vy *= -0.8;
@@ -455,9 +588,7 @@ function update(dt) {
   }
   if (ball.y + ball.r > fieldBot - 8) {
     if (ball.x > goalLeft && ball.x < goalRight && goalCooldown <= 0) {
-      awayScore++;
-      triggerGoal('DOI THU GHI BAN', false);
-      return;
+      awayScore++; triggerGoal('DOI THU GHI BAN', false); return;
     } else {
       ball.y = fieldBot - 8 - ball.r;
       ball.vy *= -0.8;
@@ -477,10 +608,7 @@ function roundRect(x, y, w, h, r) {
 }
 
 function draw() {
-  if (gameState.screen === 'menu') {
-    drawMenu();
-    return;
-  }
+  if (gameState.screen === 'menu') { drawMenu(); return; }
 
   ctx.fillStyle = '#0b1f0b';
   ctx.fillRect(0, 0, W, H);
@@ -504,18 +632,13 @@ function drawMenu() {
   ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
 
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-  ctx.fillStyle = '#ffd54f';
-  ctx.font = 'bold 34px sans-serif';
+  ctx.fillStyle = '#ffd54f'; ctx.font = 'bold 34px sans-serif';
   ctx.fillText('MINI FC MOBILE', W/2, H * 0.15);
-
-  ctx.fillStyle = 'rgba(255,255,255,0.5)';
-  ctx.font = '14px sans-serif';
+  ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.font = '14px sans-serif';
   ctx.fillText('UPDATE 2.1', W/2, H * 0.20);
 
-  const lgR = 46;
-  const lgY = H * 0.38;
-  const lg1X = W/2 - 90;
-  const lg2X = W/2 + 90;
+  const lgR = 46, lgY = H * 0.38;
+  const lg1X = W/2 - 90, lg2X = W/2 + 90;
 
   const gr1 = ctx.createRadialGradient(lg1X-10, lgY-10, 5, lg1X, lgY, lgR);
   gr1.addColorStop(0, '#64b5f6'); gr1.addColorStop(1, '#0d47a1');
@@ -523,9 +646,8 @@ function drawMenu() {
   ctx.fillStyle = gr1; ctx.fill();
   ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.stroke();
   ctx.fillStyle = '#fff'; ctx.font = 'bold 26px sans-serif';
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText('FC', lg1X, lgY + 1);
-  ctx.fillStyle = '#fff'; ctx.font = 'bold 14px sans-serif';
+  ctx.font = 'bold 14px sans-serif';
   ctx.fillText('DOI BAN', lg1X, lgY + lgR + 20);
 
   const gr2 = ctx.createRadialGradient(lg2X-10, lgY-10, 5, lg2X, lgY, lgR);
@@ -535,11 +657,10 @@ function drawMenu() {
   ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.stroke();
   ctx.fillStyle = '#fff'; ctx.font = 'bold 26px sans-serif';
   ctx.fillText('AI', lg2X, lgY + 1);
-  ctx.fillStyle = '#fff'; ctx.font = 'bold 14px sans-serif';
+  ctx.font = 'bold 14px sans-serif';
   ctx.fillText('DOI AI', lg2X, lgY + lgR + 20);
 
-  ctx.fillStyle = 'rgba(255,255,255,0.7)';
-  ctx.font = 'bold 18px sans-serif';
+  ctx.fillStyle = 'rgba(255,255,255,0.7)'; ctx.font = 'bold 18px sans-serif';
   ctx.fillText('VS', W/2, lgY);
 
   const pb = getPlayBtn();
@@ -551,10 +672,9 @@ function drawMenu() {
   ctx.fillStyle = '#fff'; ctx.font = 'bold 26px sans-serif';
   ctx.fillText('PLAY', pb.x + pb.w/2, pb.y + pb.h/2);
 
-  ctx.fillStyle = 'rgba(255,255,255,0.5)';
-  ctx.font = '13px sans-serif';
+  ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.font = '13px sans-serif';
   ctx.fillText('Tran dau 90 giay', W/2, H * 0.78);
-  ctx.fillText('Joystick trai - Nut SUT / CHUYEN / CHAY', W/2, H * 0.82);
+  ctx.fillText('XOAC de cuop bong - The luc gioi han toc do', W/2, H * 0.82);
 }
 
 function drawCountdown() {
@@ -564,26 +684,20 @@ function drawCountdown() {
   if (n > 0) { text = String(n); color = '#ffd54f'; }
   else       { text = 'GO!';      color = '#4caf50'; }
 
-  ctx.fillStyle = 'rgba(0,0,0,0.55)';
-  ctx.fillRect(0, 0, W, H);
-
+  ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(0, 0, W, H);
   const scale = 1 + (1 - frac) * 0.3;
   ctx.save();
   ctx.translate(W/2, H/2);
   ctx.scale(scale, scale);
-  ctx.fillStyle = color;
-  ctx.font = 'bold 120px sans-serif';
+  ctx.fillStyle = color; ctx.font = 'bold 120px sans-serif';
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText(text, 0, 0);
   ctx.restore();
 }
 
 function drawPauseMenu() {
-  ctx.fillStyle = 'rgba(0,0,0,0.78)';
-  ctx.fillRect(0, 0, W, H);
-
-  ctx.fillStyle = '#ffd54f';
-  ctx.font = 'bold 42px sans-serif';
+  ctx.fillStyle = 'rgba(0,0,0,0.78)'; ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = '#ffd54f'; ctx.font = 'bold 42px sans-serif';
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText('PAUSED', W/2, H * 0.28);
 
@@ -604,6 +718,17 @@ function drawPauseMenu() {
   roundRect(eb.x, eb.y, eb.w, eb.h, 14); ctx.stroke();
   ctx.fillStyle = '#fff'; ctx.font = 'bold 22px sans-serif';
   ctx.fillText('THOAT', eb.x + eb.w/2, eb.y + eb.h/2);
+}
+
+function drawStaminaBar(x, y, w, h, ratio, isPlayer) {
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(x - 1, y - 1, w + 2, h + 2);
+  let c = '#4caf50';
+  if (ratio < 0.25) c = '#f44336';
+  else if (ratio < 0.5) c = '#ff9800';
+  else if (!isPlayer) c = '#ff7043';
+  ctx.fillStyle = c;
+  ctx.fillRect(x, y, w * ratio, h);
 }
 
 function drawWorld() {
@@ -643,6 +768,15 @@ function drawWorld() {
     ctx.lineWidth = 3; ctx.stroke();
   }
 
+  // Tackle trail
+  if (player.tackling) {
+    ctx.beginPath();
+    ctx.arc(player.x, player.y, player.r + 5, 0, Math.PI*2);
+    ctx.strokeStyle = 'rgba(255,152,0,0.85)';
+    ctx.lineWidth = 4; ctx.stroke();
+  }
+
+  // Player
   ctx.fillStyle = 'rgba(0,0,0,0.25)';
   ctx.beginPath(); ctx.arc(player.x, player.y + 4, player.r, 0, Math.PI*2); ctx.fill();
   ctx.fillStyle = player.color;
@@ -652,6 +786,11 @@ function drawWorld() {
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText('10', player.x, player.y + 1);
 
+  // Player stamina bar
+  drawStaminaBar(player.x - 22, player.y - player.r - 12, 44, 5,
+                 player.stamina / STAMINA_MAX, true);
+
+  // Enemy
   ctx.fillStyle = 'rgba(0,0,0,0.25)';
   ctx.beginPath(); ctx.arc(enemy.x, enemy.y + 4, enemy.r, 0, Math.PI*2); ctx.fill();
   ctx.fillStyle = enemy.color;
@@ -660,6 +799,11 @@ function drawWorld() {
   ctx.fillStyle = '#fff';
   ctx.fillText('9', enemy.x, enemy.y + 1);
 
+  // Enemy stamina bar
+  drawStaminaBar(enemy.x - 22, enemy.y - enemy.r - 12, 44, 5,
+                 enemy.stamina / STAMINA_MAX, false);
+
+  // Ball
   ctx.fillStyle = 'rgba(0,0,0,0.3)';
   ctx.beginPath(); ctx.arc(ball.x, ball.y + 3, ball.r, 0, Math.PI*2); ctx.fill();
   ctx.fillStyle = '#fff';
@@ -691,14 +835,16 @@ function drawMinimap() {
   ctx.strokeRect(mmX, mmY + camera.y * sy, mmW, H * sy);
 }
 
-function drawRoundBtn(b, label, c1, c2, fs) {
+function drawRoundBtn(b, label, c1, c2, fs, disabled) {
   ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI*2);
   const g = ctx.createRadialGradient(b.x, b.y - b.r*0.3, 3, b.x, b.y, b.r);
-  if (b.pressed) { g.addColorStop(0, '#fff'); g.addColorStop(1, c1); }
-  else           { g.addColorStop(0, c1); g.addColorStop(1, c2); }
+  if (disabled) { g.addColorStop(0, '#555'); g.addColorStop(1, '#333'); }
+  else if (b.pressed) { g.addColorStop(0, '#fff'); g.addColorStop(1, c1); }
+  else { g.addColorStop(0, c1); g.addColorStop(1, c2); }
   ctx.fillStyle = g; ctx.fill();
-  ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.stroke();
-  ctx.fillStyle = '#fff';
+  ctx.strokeStyle = disabled ? 'rgba(255,255,255,0.3)' : '#fff';
+  ctx.lineWidth = 3; ctx.stroke();
+  ctx.fillStyle = disabled ? 'rgba(255,255,255,0.4)' : '#fff';
   ctx.font = 'bold ' + fs + 'px sans-serif';
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText(label, b.x, b.y);
@@ -728,9 +874,12 @@ function drawJoystickUI() {
 }
 
 function drawButtonsUI() {
-  drawRoundBtn(btnSprint, 'CHAY',   '#43a047', '#1b5e20', 11);
-  drawRoundBtn(btnShoot,  'SUT',    '#e53935', '#b71c1c', 20);
-  drawRoundBtn(btnPass,   'CHUYEN', '#1e88e5', '#0d47a1', 11);
+  const tackleDisabled = player.stamina < TACKLE_STAMINA_COST || player.tackleCooldown > 0;
+  const sprintDisabled = player.stamina <= STAMINA_LOW;
+  drawRoundBtn(btnTackle, 'XOAC', '#ff6f00', '#e65100', 11, tackleDisabled);
+  drawRoundBtn(btnShoot,  'SUT',  '#e53935', '#b71c1c', 20, false);
+  drawRoundBtn(btnPass,   'CHUYEN','#1e88e5', '#0d47a1', 11, false);
+  drawRoundBtn(btnSprint, 'CHAY', '#43a047', '#1b5e20', 11, sprintDisabled);
 }
 
 function drawScoreboard() {
@@ -738,7 +887,6 @@ function drawScoreboard() {
   ctx.fillRect(0, 0, W, SCOREBOARD_H);
   ctx.fillStyle = 'rgba(255,255,255,0.15)';
   ctx.fillRect(0, SCOREBOARD_H - 1, W, 1);
-
   const cy = SCOREBOARD_H / 2;
 
   ctx.beginPath(); ctx.arc(btnPause.x, btnPause.y, btnPause.r, 0, Math.PI*2);
@@ -796,8 +944,7 @@ function drawGoalOverlay() {
 }
 
 function drawFullTime() {
-  ctx.fillStyle = 'rgba(0,0,0,0.85)';
-  ctx.fillRect(0, 0, W, H);
+  ctx.fillStyle = 'rgba(0,0,0,0.85)'; ctx.fillRect(0, 0, W, H);
   ctx.fillStyle = '#ffd54f'; ctx.font = 'bold 42px sans-serif';
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText('FULL TIME', W/2, H * 0.22);
