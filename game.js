@@ -12,16 +12,23 @@ const BALL_HOLD_SLOW = 0.8;
 const COUNTDOWN_TIME = 3;
 
 const STAMINA_MAX = 100;
-const STAMINA_DRAIN_WALK = 2.5;
-const STAMINA_DRAIN_SPRINT = 16;
-const STAMINA_REGEN = 11;
-const STAMINA_LOW = 20;
-const STAMINA_SLOW = 45;
+const STAMINA_DRAIN_WALK = 1.2;
+const STAMINA_DRAIN_SPRINT = 7;
+const STAMINA_REGEN = 20;
+const STAMINA_LOW = 15;
+const STAMINA_SLOW = 30;
 
-const TACKLE_DURATION = 0.35;
-const TACKLE_COOLDOWN = 0.9;
-const TACKLE_SPEED = 9;
-const TACKLE_STAMINA_COST = 22;
+const TACKLE_DURATION = 0.18;
+const TACKLE_COOLDOWN_HIT = 0.5;
+const TACKLE_COOLDOWN_MISS = 1.5;
+const TACKLE_SPEED = 7;
+const TACKLE_STAMINA_COST = 10;
+
+const AI_DRIBBLE_STICK = 0.18;
+const AI_STICK_PENALTY_LOW = 0.5;
+const AI_STICK_PENALTY_CRIT = 0.2;
+const AI_STUN_TIME = 0.3;
+const BALL_BOUNCE_FORCE = 9;
 
 let W = 0, H = 0;
 let WORLD_W = 0, WORLD_H = 0;
@@ -46,7 +53,8 @@ const player = {
 };
 const enemy = {
   x:0, y:0, r:20, color:'#f44336',
-  stamina: STAMINA_MAX
+  stamina: STAMINA_MAX,
+  stunTimer: 0
 };
 const ball = { x:0, y:0, r:9, vx:0, vy:0 };
 
@@ -321,7 +329,6 @@ function doTackle() {
   }
   player.tackling = true;
   player.tackleTimer = TACKLE_DURATION;
-  player.tackleCooldown = TACKLE_COOLDOWN;
   player.stamina -= TACKLE_STAMINA_COST;
 
   let dirX = 0, dirY = -1;
@@ -341,8 +348,7 @@ function doTackle() {
 
   playTackle();
   vibrate([40]);
-        }
-
+}
 function startCountdown() {
   homeScore = 0; awayScore = 0;
   gameState.timeLeft = MATCH_DURATION;
@@ -354,6 +360,7 @@ function startCountdown() {
   player.tackling = false;
   player.tackleCooldown = 0;
   enemy.stamina = STAMINA_MAX;
+  enemy.stunTimer = 0;
   resetPositions();
 }
 
@@ -393,6 +400,12 @@ function speedMultFromStamina(st) {
   return 1;
 }
 
+function getAIStickMult() {
+  if (enemy.stamina < STAMINA_LOW) return AI_STICK_PENALTY_CRIT;
+  if (enemy.stamina < STAMINA_SLOW) return AI_STICK_PENALTY_LOW;
+  return 1;
+}
+
 function update(dt) {
   if (gameState.screen === 'menu') return;
   if (gameState.screen === 'paused') return;
@@ -402,9 +415,7 @@ function update(dt) {
     const before = Math.ceil(gameState.countdown);
     gameState.countdown -= dt;
     const after = Math.ceil(gameState.countdown);
-    if (after !== before && after > 0) {
-      playBeep(); vibrate([20]);
-    }
+    if (after !== before && after > 0) { playBeep(); vibrate([20]); }
     if (gameState.countdown <= 0) {
       gameState.screen = 'playing';
       playWhistle(); vibrate([100]);
@@ -429,29 +440,36 @@ function update(dt) {
   }
   if (goalCooldown > 0) goalCooldown--;
 
-  // ===== TACKLE COOLDOWN =====
   if (player.tackleCooldown > 0) player.tackleCooldown -= dt;
+  if (enemy.stunTimer > 0) enemy.stunTimer -= dt;
 
-  // ===== PLAYER MOVEMENT =====
   const distPB = Math.hypot(ball.x - player.x, ball.y - player.y);
   const playerHasBall = distPB < player.r + ball.r + 8;
 
+  // ===== PLAYER MOVEMENT =====
   if (player.tackling) {
-    // Slide motion
     player.tackleTimer -= dt;
     player.x += player.tackleDirX * TACKLE_SPEED * 60 * dt;
     player.y += player.tackleDirY * TACKLE_SPEED * 60 * dt;
 
-    // Hit ball during slide?
     const dB = Math.hypot(ball.x - player.x, ball.y - player.y);
-    if (dB < player.r + ball.r + 12) {
-      // Steal ball
-      ball.vx = player.tackleDirX * 5;
-      ball.vy = player.tackleDirY * 5;
-    }
-
-    if (player.tackleTimer <= 0) {
+    if (dB < player.r + ball.r + 14) {
+      // HIT! Steal ball
+      const wasAIHolding = Math.hypot(ball.x - enemy.x, ball.y - enemy.y) < enemy.r + ball.r + 12;
+      const force = wasAIHolding ? BALL_BOUNCE_FORCE * 1.8 : BALL_BOUNCE_FORCE;
+      ball.vx = player.tackleDirX * force;
+      ball.vy = player.tackleDirY * force;
       player.tackling = false;
+      player.tackleTimer = 0;
+      player.tackleCooldown = TACKLE_COOLDOWN_HIT;
+      if (wasAIHolding) {
+        enemy.stunTimer = AI_STUN_TIME;
+        vibrate([60]);
+      }
+    } else if (player.tackleTimer <= 0) {
+      // MISS! Long cooldown
+      player.tackling = false;
+      player.tackleCooldown = TACKLE_COOLDOWN_MISS;
     }
   } else {
     if (joy.active) {
@@ -477,13 +495,10 @@ function update(dt) {
 
   // ===== PLAYER STAMINA =====
   let drain = 0;
-  if (player.tackling) {
-    drain = 0;
-  } else if (joy.active) {
+  if (player.tackling) drain = 0;
+  else if (joy.active) {
     const d = Math.hypot(joy.x - joy.baseX, joy.y - joy.baseY);
-    if (d > JOY_DEADZONE) {
-      drain = sprinting ? STAMINA_DRAIN_SPRINT : STAMINA_DRAIN_WALK;
-    }
+    if (d > JOY_DEADZONE) drain = sprinting ? STAMINA_DRAIN_SPRINT : STAMINA_DRAIN_WALK;
   }
   if (drain > 0) player.stamina -= drain * dt;
   else player.stamina += STAMINA_REGEN * dt;
@@ -495,7 +510,9 @@ function update(dt) {
   const aiGoalX = WORLD_W / 2;
   const aiGoalY = fieldBot;
 
-  if (aiHasBall) {
+  if (enemy.stunTimer > 0) {
+    // AI bị khựng → không làm gì
+  } else if (aiHasBall) {
     let dirX = aiGoalX - enemy.x;
     let dirY = aiGoalY - enemy.y;
     let len = Math.hypot(dirX, dirY) || 1;
@@ -517,13 +534,14 @@ function update(dt) {
     enemy.y += dirY * aiSpd;
     enemy.stamina -= 3 * dt;
 
+    // ===== DRIBBLE (giảm độ dính) =====
+    const stick = AI_DRIBBLE_STICK * getAIStickMult();
     const leadDist = enemy.r + ball.r - 2;
     const tbx = enemy.x + dirX * leadDist;
     const tby = enemy.y + dirY * leadDist;
-    ball.x += (tbx - ball.x) * 0.35;
-    ball.y += (tby - ball.y) * 0.35;
-    ball.vx = 0;
-    ball.vy = 0;
+    ball.x += (tbx - ball.x) * stick;
+    ball.y += (tby - ball.y) * stick;
+    // Bỏ ép vx/vy = 0 → để bóng có quán tính, dễ bị cướp
 
     const distGoal = Math.hypot(aiGoalX - enemy.x, aiGoalY - enemy.y);
     if (distGoal < penaltyH * 1.2 && goalCooldown <= 0) {
@@ -552,14 +570,14 @@ function update(dt) {
     enemy.stamina -= 2 * dt;
   }
   enemy.stamina = Math.max(0, Math.min(STAMINA_MAX, enemy.stamina));
-  if (!aiHasBall && !joy.active) enemy.stamina += STAMINA_REGEN * dt;
+  if (!aiHasBall && !joy.active && enemy.stunTimer <= 0) enemy.stamina += STAMINA_REGEN * dt;
   enemy.stamina = Math.max(0, Math.min(STAMINA_MAX, enemy.stamina));
 
   enemy.x = Math.max(enemy.r, Math.min(WORLD_W - enemy.r, enemy.x));
   enemy.y = Math.max(fieldTop + enemy.r, Math.min(WORLD_H - enemy.r, enemy.y));
 
-  // ===== BALL COLLISION =====
-  if (!aiHasBall) {
+  // ===== BALL COLLISION (player khi không tackling) =====
+  if (!aiHasBall && !player.tackling) {
     const d1 = Math.hypot(ball.x - player.x, ball.y - player.y);
     if (d1 < player.r + ball.r && d1 > 0.01) {
       const ang = Math.atan2(ball.y - player.y, ball.x - player.x);
@@ -596,7 +614,8 @@ function update(dt) {
   }
 
   updateCamera();
-}
+          }
+
 function roundRect(x, y, w, h, r) {
   ctx.beginPath();
   ctx.moveTo(x + r, y);
@@ -609,7 +628,6 @@ function roundRect(x, y, w, h, r) {
 
 function draw() {
   if (gameState.screen === 'menu') { drawMenu(); return; }
-
   ctx.fillStyle = '#0b1f0b';
   ctx.fillRect(0, 0, W, H);
   ctx.save();
@@ -635,7 +653,7 @@ function drawMenu() {
   ctx.fillStyle = '#ffd54f'; ctx.font = 'bold 34px sans-serif';
   ctx.fillText('MINI FC MOBILE', W/2, H * 0.15);
   ctx.fillStyle = 'rgba(255,255,255,0.5)'; ctx.font = '14px sans-serif';
-  ctx.fillText('UPDATE 2.1', W/2, H * 0.20);
+  ctx.fillText('UPDATE 2.2.1', W/2, H * 0.20);
 
   const lgR = 46, lgY = H * 0.38;
   const lg1X = W/2 - 90, lg2X = W/2 + 90;
@@ -683,7 +701,6 @@ function drawCountdown() {
   let text, color;
   if (n > 0) { text = String(n); color = '#ffd54f'; }
   else       { text = 'GO!';      color = '#4caf50'; }
-
   ctx.fillStyle = 'rgba(0,0,0,0.55)'; ctx.fillRect(0, 0, W, H);
   const scale = 1 + (1 - frac) * 0.3;
   ctx.save();
@@ -768,7 +785,6 @@ function drawWorld() {
     ctx.lineWidth = 3; ctx.stroke();
   }
 
-  // Tackle trail
   if (player.tackling) {
     ctx.beginPath();
     ctx.arc(player.x, player.y, player.r + 5, 0, Math.PI*2);
@@ -776,7 +792,13 @@ function drawWorld() {
     ctx.lineWidth = 4; ctx.stroke();
   }
 
-  // Player
+  if (enemy.stunTimer > 0) {
+    ctx.beginPath();
+    ctx.arc(enemy.x, enemy.y, enemy.r + 6, 0, Math.PI*2);
+    ctx.strokeStyle = 'rgba(255,235,59,0.9)';
+    ctx.lineWidth = 3; ctx.stroke();
+  }
+
   ctx.fillStyle = 'rgba(0,0,0,0.25)';
   ctx.beginPath(); ctx.arc(player.x, player.y + 4, player.r, 0, Math.PI*2); ctx.fill();
   ctx.fillStyle = player.color;
@@ -786,11 +808,9 @@ function drawWorld() {
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText('10', player.x, player.y + 1);
 
-  // Player stamina bar
   drawStaminaBar(player.x - 22, player.y - player.r - 12, 44, 5,
                  player.stamina / STAMINA_MAX, true);
 
-  // Enemy
   ctx.fillStyle = 'rgba(0,0,0,0.25)';
   ctx.beginPath(); ctx.arc(enemy.x, enemy.y + 4, enemy.r, 0, Math.PI*2); ctx.fill();
   ctx.fillStyle = enemy.color;
@@ -799,11 +819,9 @@ function drawWorld() {
   ctx.fillStyle = '#fff';
   ctx.fillText('9', enemy.x, enemy.y + 1);
 
-  // Enemy stamina bar
   drawStaminaBar(enemy.x - 22, enemy.y - enemy.r - 12, 44, 5,
                  enemy.stamina / STAMINA_MAX, false);
 
-  // Ball
   ctx.fillStyle = 'rgba(0,0,0,0.3)';
   ctx.beginPath(); ctx.arc(ball.x, ball.y + 3, ball.r, 0, Math.PI*2); ctx.fill();
   ctx.fillStyle = '#fff';
