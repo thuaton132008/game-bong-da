@@ -5,16 +5,23 @@ const SCOREBOARD_H = 72;
 const MATCH_DURATION = 90;
 const JOY_DEADZONE = 12;
 const PLAYER_SPEED = 3.5;
-const ENEMY_SPEED = 1.9;
+const ENEMY_SPEED = 2.0;
 const SPRINT_MULT = 1.7;
 const WORLD_SCALE_Y = 1.8;
+const BALL_HOLD_SLOW = 0.8;
+const COUNTDOWN_TIME = 3;
 
 let W = 0, H = 0;
 let WORLD_W = 0, WORLD_H = 0;
 let homeScore = 0, awayScore = 0;
 let goalMsg = null, goalCooldown = 0;
 let sprinting = false;
-let gameState = { timeLeft: MATCH_DURATION, isFullTime: false };
+let gameState = {
+  screen: 'menu',
+  timeLeft: MATCH_DURATION,
+  countdown: COUNTDOWN_TIME,
+  isFullTime: false
+};
 
 const camera = { y: 0 };
 const player = { x:0, y:0, r:20, color:'#2196f3' };
@@ -25,6 +32,7 @@ const joy       = { active:false, id:null, baseX:0, baseY:0, x:0, y:0, R:80 };
 const btnShoot  = { x:0, y:0, r:42, pressed:false, id:null };
 const btnPass   = { x:0, y:0, r:30, pressed:false, id:null };
 const btnSprint = { x:0, y:0, r:30, pressed:false, id:null };
+const btnPause  = { x:32, y:SCOREBOARD_H/2, r:18, pressed:false, id:null };
 
 let goalWidth = 0, goalLeft = 0, goalRight = 0;
 let fieldTop = 0, fieldBot = 0;
@@ -47,22 +55,6 @@ function playKick() {
   g1.gain.setValueAtTime(0.3, t);
   g1.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
   o1.start(t); o1.stop(t + 0.18);
-  const o2 = audioCtx.createOscillator(), g2 = audioCtx.createGain();
-  o2.connect(g2); g2.connect(audioCtx.destination);
-  o2.type = 'triangle';
-  o2.frequency.setValueAtTime(900, t);
-  o2.frequency.exponentialRampToValueAtTime(400, t + 0.05);
-  g2.gain.setValueAtTime(0.22, t);
-  g2.gain.exponentialRampToValueAtTime(0.001, t + 0.08);
-  o2.start(t); o2.stop(t + 0.1);
-  const n = audioCtx.sampleRate * 0.05;
-  const buf = audioCtx.createBuffer(1, n, audioCtx.sampleRate);
-  const d = buf.getChannelData(0);
-  for (let i=0;i<n;i++) d[i]=(Math.random()*2-1)*Math.pow(1-i/n,4);
-  const src = audioCtx.createBufferSource(); src.buffer = buf;
-  const g3 = audioCtx.createGain(); g3.gain.value = 0.15;
-  src.connect(g3); g3.connect(audioCtx.destination);
-  src.start(t);
 }
 
 function playPass() {
@@ -81,14 +73,6 @@ function playPass() {
 function playGoal() {
   if (!audioCtx) return;
   const t = audioCtx.currentTime;
-  const n = audioCtx.sampleRate * 0.25;
-  const buf = audioCtx.createBuffer(1, n, audioCtx.sampleRate);
-  const d = buf.getChannelData(0);
-  for (let i=0;i<n;i++) d[i]=(Math.random()*2-1)*Math.pow(1-i/n,2);
-  const src = audioCtx.createBufferSource(); src.buffer = buf;
-  const gN = audioCtx.createGain(); gN.gain.value = 0.3;
-  src.connect(gN); gN.connect(audioCtx.destination);
-  src.start(t);
   const notes = [523,659,784,1047];
   for (let i=0;i<notes.length;i++){
     const o = audioCtx.createOscillator(), g = audioCtx.createGain();
@@ -115,6 +99,17 @@ function playWhistle() {
   g.gain.setValueAtTime(0.09, t + 0.05);
   g.gain.exponentialRampToValueAtTime(0.001, t + 0.5);
   o.start(t); o.stop(t + 0.55);
+}
+
+function playBeep() {
+  if (!audioCtx) return;
+  const t = audioCtx.currentTime;
+  const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+  o.connect(g); g.connect(audioCtx.destination);
+  o.type = 'sine'; o.frequency.value = 660;
+  g.gain.setValueAtTime(0.15, t);
+  g.gain.exponentialRampToValueAtTime(0.001, t + 0.15);
+  o.start(t); o.stop(t + 0.18);
 }
 
 function vibrate(p) { if (navigator.vibrate) navigator.vibrate(p); }
@@ -148,17 +143,47 @@ window.addEventListener('resize', resize);
 
 function hitsBtn(x, y, b) { return Math.hypot(x - b.x, y - b.y) < b.r + 14; }
 function getRestartBtn() { return { x: W/2 - 100, y: H*0.68, w: 200, h: 60 }; }
+function getPlayBtn()    { return { x: W/2 - 100, y: H*0.62, w: 200, h: 60 }; }
+function getResumeBtn()  { return { x: W/2 - 100, y: H*0.42, w: 200, h: 55 }; }
+function getExitBtn()    { return { x: W/2 - 100, y: H*0.52, w: 200, h: 55 }; }
 
 function onTouchStart(ev) {
   ensureAudio();
   for (const t of ev.changedTouches) {
     const x = t.clientX, y = t.clientY;
-    if (gameState.isFullTime) {
-      const rb = getRestartBtn();
-      if (x > rb.x && x < rb.x + rb.w && y > rb.y && y < rb.y + rb.h) restartGame();
+
+    if (gameState.screen === 'menu') {
+      const pb = getPlayBtn();
+      if (x > pb.x && x < pb.x + pb.w && y > pb.y && y < pb.y + pb.h) startCountdown();
       continue;
     }
-    if (y < SCOREBOARD_H) continue;
+    if (gameState.screen === 'countdown') continue;
+
+    if (gameState.screen === 'paused') {
+      const rb = getResumeBtn();
+      const eb = getExitBtn();
+      if (x > rb.x && x < rb.x + rb.w && y > rb.y && y < rb.y + rb.h) {
+        gameState.screen = 'playing';
+      } else if (x > eb.x && x < eb.x + eb.w && y > eb.y && y < eb.y + eb.h) {
+        goToMenu();
+      }
+      continue;
+    }
+
+    if (gameState.screen === 'fulltime') {
+      const rb = getRestartBtn();
+      if (x > rb.x && x < rb.x + rb.w && y > rb.y && y < rb.y + rb.h) startCountdown();
+      continue;
+    }
+
+    if (y < SCOREBOARD_H) {
+      if (hitsBtn(x, y, btnPause)) {
+        btnPause.pressed = true; btnPause.id = t.identifier;
+        gameState.screen = 'paused';
+      }
+      continue;
+    }
+
     if (hitsBtn(x, y, btnShoot)) {
       btnShoot.pressed = true; btnShoot.id = t.identifier; shoot();
     } else if (hitsBtn(x, y, btnPass)) {
@@ -193,6 +218,7 @@ function onTouchEnd(ev) {
     if (t.identifier === btnShoot.id)  { btnShoot.pressed = false; btnShoot.id = null; }
     if (t.identifier === btnPass.id)   { btnPass.pressed = false; btnPass.id = null; }
     if (t.identifier === btnSprint.id) { btnSprint.pressed = false; btnSprint.id = null; }
+    if (t.identifier === btnPause.id)  { btnPause.pressed = false; btnPause.id = null; }
   }
   ev.preventDefault();
 }
@@ -238,8 +264,24 @@ function doPass() {
     vibrate([15]);
   }
 }
+function startCountdown() {
+  homeScore = 0; awayScore = 0;
+  gameState.timeLeft = MATCH_DURATION;
+  gameState.countdown = COUNTDOWN_TIME;
+  gameState.isFullTime = false;
+  gameState.screen = 'countdown';
+  goalMsg = null; goalCooldown = 0;
+  resetPositions();
+}
 
-function init() { resize(); restartGame(); }
+function goToMenu() {
+  gameState.screen = 'menu';
+  homeScore = 0; awayScore = 0;
+  goalMsg = null; goalCooldown = 0;
+  resetPositions();
+}
+
+function init() { resize(); resetPositions(); gameState.screen = 'menu'; }
 
 function resetPositions() {
   player.x = WORLD_W/2;  player.y = WORLD_H * 0.60;
@@ -247,14 +289,6 @@ function resetPositions() {
   ball.x   = WORLD_W/2;  ball.y   = WORLD_H * 0.50;
   ball.vx = 0; ball.vy = 0;
   camera.y = Math.max(0, Math.min(WORLD_H - H, ball.y - H/2));
-}
-
-function restartGame() {
-  homeScore = 0; awayScore = 0;
-  gameState.timeLeft = MATCH_DURATION;
-  gameState.isFullTime = false;
-  goalMsg = null; goalCooldown = 0;
-  resetPositions();
 }
 
 function triggerGoal(msg, isHome) {
@@ -271,16 +305,38 @@ function updateCamera() {
 }
 
 function update(dt) {
-  if (!gameState.isFullTime && !goalMsg) {
+  if (gameState.screen === 'menu') return;
+  if (gameState.screen === 'paused') return;
+  if (gameState.screen === 'fulltime') return;
+
+  if (gameState.screen === 'countdown') {
+    const before = Math.ceil(gameState.countdown);
+    gameState.countdown -= dt;
+    const after = Math.ceil(gameState.countdown);
+    if (after !== before && after > 0) {
+      playBeep();
+      vibrate([20]);
+    }
+    if (gameState.countdown <= 0) {
+      gameState.screen = 'playing';
+      playWhistle();
+      vibrate([100]);
+    }
+    return;
+  }
+
+  // screen === 'playing'
+  if (!goalMsg) {
     gameState.timeLeft -= dt;
     if (gameState.timeLeft <= 0) {
       gameState.timeLeft = 0;
       gameState.isFullTime = true;
+      gameState.screen = 'fulltime';
       playWhistle();
       vibrate([200]);
+      return;
     }
   }
-  if (gameState.isFullTime) return;
   if (goalMsg) {
     goalMsg.timer--;
     if (goalMsg.timer <= 0) { goalMsg = null; resetPositions(); }
@@ -288,18 +344,22 @@ function update(dt) {
   }
   if (goalCooldown > 0) goalCooldown--;
 
+  const distPB = Math.hypot(ball.x - player.x, ball.y - player.y);
+  const playerHasBall = distPB < player.r + ball.r + 8;
+
   if (joy.active) {
     const dx = joy.x - joy.baseX;
     const dy = joy.y - joy.baseY;
     const d = Math.hypot(dx, dy);
     if (d > JOY_DEADZONE) {
       const intensity = Math.min(1, (d - JOY_DEADZONE) / (joy.R - JOY_DEADZONE));
-      const spd = PLAYER_SPEED * (btnSprint.pressed ? SPRINT_MULT : 1);
+      let spd = PLAYER_SPEED * (btnSprint.pressed ? SPRINT_MULT : 1);
+      if (playerHasBall) spd *= BALL_HOLD_SLOW;
       player.x += (dx/d) * spd * intensity;
       player.y += (dy/d) * spd * intensity;
     }
   }
-  sprinting = btnSprint.pressed && joy.active;
+  sprinting = btnSprint.pressed && joy.active && !playerHasBall;
   player.x = Math.max(player.r, Math.min(WORLD_W - player.r, player.x));
   player.y = Math.max(fieldTop + player.r, Math.min(WORLD_H - player.r, player.y));
 
@@ -318,32 +378,32 @@ function update(dt) {
     const dyp = enemy.y - player.y;
     const distP = Math.hypot(dxp, dyp) || 1;
     if (distP < 120) {
-      const push = (120 - distP) / 120 * 1.5;
+      const push = (120 - distP) / 120 * 1.2;
       dirX += (dxp / distP) * push;
       dirY += (dyp / distP) * push;
       len = Math.hypot(dirX, dirY) || 1;
       dirX /= len; dirY /= len;
     }
 
-    const aiSpd = ENEMY_SPEED * 1.25;
+    const aiSpd = ENEMY_SPEED * BALL_HOLD_SLOW;
     enemy.x += dirX * aiSpd;
     enemy.y += dirY * aiSpd;
 
     const leadDist = enemy.r + ball.r - 2;
     const tbx = enemy.x + dirX * leadDist;
     const tby = enemy.y + dirY * leadDist;
-    ball.x += (tbx - ball.x) * 0.4;
-    ball.y += (tby - ball.y) * 0.4;
+    ball.x += (tbx - ball.x) * 0.35;
+    ball.y += (tby - ball.y) * 0.35;
     ball.vx = 0;
     ball.vy = 0;
 
     const distGoal = Math.hypot(aiGoalX - enemy.x, aiGoalY - enemy.y);
-    if (distGoal < penaltyH * 1.3 && goalCooldown <= 0) {
+    if (distGoal < penaltyH * 1.2 && goalCooldown <= 0) {
       const sx = aiGoalX - ball.x;
       const sy = aiGoalY - ball.y;
       const sl = Math.hypot(sx, sy) || 1;
-      ball.vx = (sx / sl) * 17;
-      ball.vy = (sy / sl) * 17;
+      ball.vx = (sx / sl) * 15;
+      ball.vy = (sy / sl) * 15;
       playKick();
     }
   } else {
@@ -406,7 +466,6 @@ function update(dt) {
 
   updateCamera();
 }
-
 function roundRect(x, y, w, h, r) {
   ctx.beginPath();
   ctx.moveTo(x + r, y);
@@ -418,20 +477,133 @@ function roundRect(x, y, w, h, r) {
 }
 
 function draw() {
+  if (gameState.screen === 'menu') {
+    drawMenu();
+    return;
+  }
+
   ctx.fillStyle = '#0b1f0b';
   ctx.fillRect(0, 0, W, H);
-
   ctx.save();
   ctx.translate(0, -camera.y);
   drawWorld();
   ctx.restore();
-
   drawMinimap();
   drawScoreboard();
   drawJoystickUI();
   drawButtonsUI();
   if (goalMsg) drawGoalOverlay();
-  if (gameState.isFullTime) drawFullTime();
+  if (gameState.screen === 'countdown') drawCountdown();
+  if (gameState.screen === 'paused')    drawPauseMenu();
+  if (gameState.screen === 'fulltime')  drawFullTime();
+}
+
+function drawMenu() {
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, '#0d2a0d'); g.addColorStop(1, '#051a05');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillStyle = '#ffd54f';
+  ctx.font = 'bold 34px sans-serif';
+  ctx.fillText('MINI FC MOBILE', W/2, H * 0.15);
+
+  ctx.fillStyle = 'rgba(255,255,255,0.5)';
+  ctx.font = '14px sans-serif';
+  ctx.fillText('UPDATE 2.1', W/2, H * 0.20);
+
+  const lgR = 46;
+  const lgY = H * 0.38;
+  const lg1X = W/2 - 90;
+  const lg2X = W/2 + 90;
+
+  const gr1 = ctx.createRadialGradient(lg1X-10, lgY-10, 5, lg1X, lgY, lgR);
+  gr1.addColorStop(0, '#64b5f6'); gr1.addColorStop(1, '#0d47a1');
+  ctx.beginPath(); ctx.arc(lg1X, lgY, lgR, 0, Math.PI*2);
+  ctx.fillStyle = gr1; ctx.fill();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 26px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('FC', lg1X, lgY + 1);
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 14px sans-serif';
+  ctx.fillText('DOI BAN', lg1X, lgY + lgR + 20);
+
+  const gr2 = ctx.createRadialGradient(lg2X-10, lgY-10, 5, lg2X, lgY, lgR);
+  gr2.addColorStop(0, '#ef5350'); gr2.addColorStop(1, '#b71c1c');
+  ctx.beginPath(); ctx.arc(lg2X, lgY, lgR, 0, Math.PI*2);
+  ctx.fillStyle = gr2; ctx.fill();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 26px sans-serif';
+  ctx.fillText('AI', lg2X, lgY + 1);
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 14px sans-serif';
+  ctx.fillText('DOI AI', lg2X, lgY + lgR + 20);
+
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  ctx.font = 'bold 18px sans-serif';
+  ctx.fillText('VS', W/2, lgY);
+
+  const pb = getPlayBtn();
+  const gp = ctx.createLinearGradient(pb.x, pb.y, pb.x, pb.y + pb.h);
+  gp.addColorStop(0, '#43a047'); gp.addColorStop(1, '#1b5e20');
+  roundRect(pb.x, pb.y, pb.w, pb.h, 14); ctx.fillStyle = gp; ctx.fill();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 3;
+  roundRect(pb.x, pb.y, pb.w, pb.h, 14); ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 26px sans-serif';
+  ctx.fillText('PLAY', pb.x + pb.w/2, pb.y + pb.h/2);
+
+  ctx.fillStyle = 'rgba(255,255,255,0.5)';
+  ctx.font = '13px sans-serif';
+  ctx.fillText('Tran dau 90 giay', W/2, H * 0.78);
+  ctx.fillText('Joystick trai - Nut SUT / CHUYEN / CHAY', W/2, H * 0.82);
+}
+
+function drawCountdown() {
+  const n = Math.ceil(gameState.countdown);
+  const frac = gameState.countdown - Math.floor(gameState.countdown);
+  let text, color;
+  if (n > 0) { text = String(n); color = '#ffd54f'; }
+  else       { text = 'GO!';      color = '#4caf50'; }
+
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(0, 0, W, H);
+
+  const scale = 1 + (1 - frac) * 0.3;
+  ctx.save();
+  ctx.translate(W/2, H/2);
+  ctx.scale(scale, scale);
+  ctx.fillStyle = color;
+  ctx.font = 'bold 120px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText(text, 0, 0);
+  ctx.restore();
+}
+
+function drawPauseMenu() {
+  ctx.fillStyle = 'rgba(0,0,0,0.78)';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.fillStyle = '#ffd54f';
+  ctx.font = 'bold 42px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('PAUSED', W/2, H * 0.28);
+
+  const rb = getResumeBtn();
+  const gr = ctx.createLinearGradient(rb.x, rb.y, rb.x, rb.y + rb.h);
+  gr.addColorStop(0, '#43a047'); gr.addColorStop(1, '#1b5e20');
+  roundRect(rb.x, rb.y, rb.w, rb.h, 14); ctx.fillStyle = gr; ctx.fill();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+  roundRect(rb.x, rb.y, rb.w, rb.h, 14); ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 22px sans-serif';
+  ctx.fillText('TIEP TUC', rb.x + rb.w/2, rb.y + rb.h/2);
+
+  const eb = getExitBtn();
+  const ge = ctx.createLinearGradient(eb.x, eb.y, eb.x, eb.y + eb.h);
+  ge.addColorStop(0, '#e53935'); ge.addColorStop(1, '#b71c1c');
+  roundRect(eb.x, eb.y, eb.w, eb.h, 14); ctx.fillStyle = ge; ctx.fill();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2;
+  roundRect(eb.x, eb.y, eb.w, eb.h, 14); ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 22px sans-serif';
+  ctx.fillText('THOAT', eb.x + eb.w/2, eb.y + eb.h/2);
 }
 
 function drawWorld() {
@@ -450,7 +622,6 @@ function drawWorld() {
   ctx.lineWidth = 2;
   ctx.beginPath(); ctx.moveTo(0, midY); ctx.lineTo(WORLD_W, midY); ctx.stroke();
   ctx.beginPath(); ctx.arc(WORLD_W/2, midY, WORLD_W * 0.13, 0, Math.PI*2); ctx.stroke();
-
   ctx.strokeRect(WORLD_W/2 - WORLD_W*0.22, fieldTop, WORLD_W*0.44, penaltyH);
   ctx.strokeRect(WORLD_W/2 - WORLD_W*0.22, fieldBot - penaltyH, WORLD_W*0.44, penaltyH);
 
@@ -461,8 +632,6 @@ function drawWorld() {
     ctx.beginPath(); ctx.moveTo(x, fieldTop); ctx.lineTo(x, fieldTop + 16); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(x, fieldBot - 16); ctx.lineTo(x, fieldBot); ctx.stroke();
   }
-  ctx.beginPath(); ctx.moveTo(goalLeft, fieldTop + 16); ctx.lineTo(goalRight, fieldTop + 16); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(goalLeft, fieldBot - 16); ctx.lineTo(goalRight, fieldBot - 16); ctx.stroke();
   ctx.fillStyle = '#fff';
   ctx.fillRect(goalLeft, fieldTop, goalWidth, 5);
   ctx.fillRect(goalLeft, fieldBot - 5, goalWidth, 5);
@@ -479,8 +648,7 @@ function drawWorld() {
   ctx.fillStyle = player.color;
   ctx.beginPath(); ctx.arc(player.x, player.y, player.r, 0, Math.PI*2); ctx.fill();
   ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.stroke();
-  ctx.fillStyle = '#fff';
-  ctx.font = 'bold 14px sans-serif';
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 14px sans-serif';
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText('10', player.x, player.y + 1);
 
@@ -490,7 +658,6 @@ function drawWorld() {
   ctx.beginPath(); ctx.arc(enemy.x, enemy.y, enemy.r, 0, Math.PI*2); ctx.fill();
   ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.stroke();
   ctx.fillStyle = '#fff';
-  ctx.font = 'bold 14px sans-serif';
   ctx.fillText('9', enemy.x, enemy.y + 1);
 
   ctx.fillStyle = 'rgba(0,0,0,0.3)';
@@ -503,53 +670,32 @@ function drawWorld() {
 }
 
 function drawMinimap() {
-  const mmW = 58;
-  const mmH = 96;
-  const mmX = W - mmW - 10;
-  const mmY = SCOREBOARD_H + 10;
-  const scaleX = mmW / WORLD_W;
-  const scaleY = mmH / WORLD_H;
-
+  const mmW = 58, mmH = 96;
+  const mmX = W - mmW - 10, mmY = SCOREBOARD_H + 10;
+  const sx = mmW / WORLD_W, sy = mmH / WORLD_H;
   ctx.fillStyle = 'rgba(10,20,10,0.75)';
   roundRect(mmX, mmY, mmW, mmH, 4); ctx.fill();
-  ctx.strokeStyle = 'rgba(255,255,255,0.5)';
-  ctx.lineWidth = 1;
+  ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = 1;
   roundRect(mmX, mmY, mmW, mmH, 4); ctx.stroke();
-
   ctx.strokeStyle = 'rgba(255,255,255,0.3)';
   ctx.beginPath();
-  ctx.moveTo(mmX, mmY + mmH/2);
-  ctx.lineTo(mmX + mmW, mmY + mmH/2);
+  ctx.moveTo(mmX, mmY + mmH/2); ctx.lineTo(mmX + mmW, mmY + mmH/2);
   ctx.stroke();
-
-  ctx.fillStyle = 'rgba(76,175,80,0.65)';
-  ctx.fillRect(mmX + goalLeft*scaleX, mmY, goalWidth*scaleX, 2.5);
-  ctx.fillStyle = 'rgba(244,67,54,0.65)';
-  ctx.fillRect(mmX + goalLeft*scaleX, mmY + mmH - 2.5, goalWidth*scaleX, 2.5);
-
   ctx.fillStyle = '#fff';
-  ctx.beginPath(); ctx.arc(mmX + ball.x*scaleX, mmY + ball.y*scaleY, 2.2, 0, Math.PI*2); ctx.fill();
-
+  ctx.beginPath(); ctx.arc(mmX + ball.x*sx, mmY + ball.y*sy, 2.2, 0, Math.PI*2); ctx.fill();
   ctx.fillStyle = '#2196f3';
-  ctx.beginPath(); ctx.arc(mmX + player.x*scaleX, mmY + player.y*scaleY, 3, 0, Math.PI*2); ctx.fill();
-  ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.stroke();
-
+  ctx.beginPath(); ctx.arc(mmX + player.x*sx, mmY + player.y*sy, 3, 0, Math.PI*2); ctx.fill();
   ctx.fillStyle = '#f44336';
-  ctx.beginPath(); ctx.arc(mmX + enemy.x*scaleX, mmY + enemy.y*scaleY, 3, 0, Math.PI*2); ctx.fill();
-  ctx.strokeStyle = '#fff'; ctx.lineWidth = 1; ctx.stroke();
-
+  ctx.beginPath(); ctx.arc(mmX + enemy.x*sx, mmY + enemy.y*sy, 3, 0, Math.PI*2); ctx.fill();
   ctx.strokeStyle = 'rgba(255,255,255,0.55)';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(mmX, mmY + camera.y * scaleY, mmW, H * scaleY);
+  ctx.strokeRect(mmX, mmY + camera.y * sy, mmW, H * sy);
 }
 
 function drawRoundBtn(b, label, c1, c2, fs) {
-  ctx.beginPath(); ctx.arc(b.x, b.y + 3, b.r, 0, Math.PI*2);
-  ctx.fillStyle = 'rgba(0,0,0,0.25)'; ctx.fill();
-  const g = ctx.createRadialGradient(b.x, b.y - b.r*0.3, 3, b.x, b.y, b.r);
-  if (b.pressed) { g.addColorStop(0, '#ffffff'); g.addColorStop(0.3, c1); g.addColorStop(1, c2); }
-  else           { g.addColorStop(0, c1); g.addColorStop(1, c2); }
   ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI*2);
+  const g = ctx.createRadialGradient(b.x, b.y - b.r*0.3, 3, b.x, b.y, b.r);
+  if (b.pressed) { g.addColorStop(0, '#fff'); g.addColorStop(1, c1); }
+  else           { g.addColorStop(0, c1); g.addColorStop(1, c2); }
   ctx.fillStyle = g; ctx.fill();
   ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.stroke();
   ctx.fillStyle = '#fff';
@@ -572,7 +718,6 @@ function drawJoystickUI() {
     ctx.strokeStyle = 'rgba(255,255,255,0.5)'; ctx.lineWidth = 3; ctx.stroke();
     ctx.beginPath(); ctx.arc(joy.x, joy.y, 32, 0, Math.PI*2);
     ctx.fillStyle = 'rgba(255,255,255,0.78)'; ctx.fill();
-    ctx.strokeStyle = 'rgba(255,255,255,0.95)'; ctx.lineWidth = 2; ctx.stroke();
   } else {
     ctx.beginPath(); ctx.arc(90, H - 100, 60, 0, Math.PI*2);
     ctx.strokeStyle = 'rgba(255,255,255,0.15)'; ctx.lineWidth = 2; ctx.stroke();
@@ -583,10 +728,11 @@ function drawJoystickUI() {
 }
 
 function drawButtonsUI() {
+  drawRoundBtn(btnSprint, 'CHAY',   '#43a047', '#1b5e20', 11);
   drawRoundBtn(btnShoot,  'SUT',    '#e53935', '#b71c1c', 20);
   drawRoundBtn(btnPass,   'CHUYEN', '#1e88e5', '#0d47a1', 11);
-  drawRoundBtn(btnSprint, 'CHAY',   '#43a047', '#1b5e20', 11);
 }
+
 function drawScoreboard() {
   ctx.fillStyle = 'rgba(10,10,20,0.92)';
   ctx.fillRect(0, 0, W, SCOREBOARD_H);
@@ -594,10 +740,19 @@ function drawScoreboard() {
   ctx.fillRect(0, SCOREBOARD_H - 1, W, 1);
 
   const cy = SCOREBOARD_H / 2;
+
+  ctx.beginPath(); ctx.arc(btnPause.x, btnPause.y, btnPause.r, 0, Math.PI*2);
+  ctx.fillStyle = 'rgba(255,255,255,0.15)'; ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.6)'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(btnPause.x - 5, btnPause.y - 7, 4, 14);
+  ctx.fillRect(btnPause.x + 1, btnPause.y - 7, 4, 14);
+
   const lr = 19;
-  const hx = 60;
+  const hx = 95;
   ctx.beginPath(); ctx.arc(hx, cy, lr, 0, Math.PI*2);
   ctx.fillStyle = '#0d47a1'; ctx.fill();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
   ctx.fillStyle = '#fff'; ctx.font = 'bold 14px sans-serif';
   ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillText('FC', hx, cy + 1);
@@ -605,9 +760,18 @@ function drawScoreboard() {
   const aw = W - 60;
   ctx.beginPath(); ctx.arc(aw, cy, lr, 0, Math.PI*2);
   ctx.fillStyle = '#b71c1c'; ctx.fill();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
   ctx.fillStyle = '#fff';
   ctx.fillText('AI', aw, cy + 1);
 
+  const sw = 116, sh = 56;
+  const sxx = W/2 - sw/2, syy = cy - sh/2;
+  ctx.fillStyle = 'rgba(255,255,255,0.08)';
+  roundRect(sxx, syy, sw, sh, 10); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = 1.5;
+  roundRect(sxx, syy, sw, sh, 10); ctx.stroke();
+
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
   ctx.fillStyle = '#4caf50'; ctx.font = 'bold 22px sans-serif';
   ctx.fillText(String(homeScore), W/2 - 20, cy - 6);
   ctx.fillStyle = '#fff'; ctx.font = 'bold 15px sans-serif';
